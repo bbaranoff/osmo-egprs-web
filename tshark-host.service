@@ -1,0 +1,18 @@
+[Unit]
+Description=tshark GSMTAP forwarder to osmo-egprs-web
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/tshark-host.sh localhost 4730
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -3,15 +3,18 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const dgram = require('dgram');
 const { spawn, execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
 
 // ─── Config ──────────────────────────────────────────────────
 const PORT       = parseInt(process.env.HTTP_PORT || '80');
 const GSMTAP_UDP = parseInt(process.env.GSMTAP_PORT || '4729');
+const SCTP_PORTS = process.env.SCTP_PORTS || '2905,29168';
 const PREFIX     = process.env.CONTAINER_PREFIX || 'osmo-operator-';
 const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.includes('--verbose');
+const UDP_IN_PORT = 4730; // port pour recevoir les paquets de l'hôte
 
 const VTY_PORTS = {
   bsc: 4242, msc: 4254, hlr: 4258, mgw: 4243, stp: 4239,
@@ -25,7 +28,6 @@ function dbg(...a)  { if (VERBOSE) console.log('[DBG]', ...a); }
 let operators = {};
 let activeOpIds = [];
 let packetIdGlobal = 0;
-let tsharkActiveClients = 0; // Nouveau compteur de clients actifs
 
 // ─── Docker Discovery ────────────────────────────────────────
 function discoverOperators() {
@@ -208,9 +210,6 @@ class VtySession {
     setTimeout(() => {
       if (!this.alive) return;
       this.write('enable');
-      setTimeout(() => {
-        if (!this.alive) return;
-      }, 500);
     }, 1000);
 
     this._send('vty_connected', { key, opId, component, port });
@@ -284,178 +283,53 @@ class VtySessionManager {
   }
 }
 
-// ─── tshark Capture par Client ───────────────────────────────
-class TsharkSession {
-  constructor(ws, clientId) {
-    this.ws = ws;
-    this.clientId = clientId;
-    this.proc = null;
-    this.running = false;
-    this.buffer = '';
+// ─── Parse une ligne tshark (format texte) ───────────────────
+function parseTsharkLine(line) {
+  // Format: [num] timestamp src → dst proto len info
+  const regex = /^(?:\s*(\d+))?\s+([\d.]+)\s+([\d.]+)\s+→\s+([\d.]+)\s+(\S+)\s+(\d+)\s+(.*)$/;
+  const match = line.match(regex);
+  if (!match) {
+    dbg('Ligne non parsée:', line);
+    return null;
   }
-
-  start() {
-    if (this.running) return;
-    
-    log(`Démarrage tshark pour client ${this.clientId}`);
-    
-    this.proc = spawn('tshark', [
-      '-i', 'any', 
-      '-f', `udp port ${GSMTAP_UDP}`,
-      '-T', 'ek', 
-      '-l', 
-      '-n',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    this.running = true;
-    this.buffer = '';
-
-    this.proc.stdout.on('data', chunk => {
-      this.buffer += chunk.toString();
-      let nl;
-      while ((nl = this.buffer.indexOf('\n')) !== -1) {
-        const line = this.buffer.substring(0, nl).trim();
-        this.buffer = this.buffer.substring(nl + 1);
-        if (!line || line.startsWith('{"index"')) continue;
-        
-        const packet = this.parseLine(line);
-        if (packet) {
-          this.sendToClient('packet', packet);
-        }
-      }
-    });
-
-    this.proc.stderr.on('data', d => {
-      const msg = d.toString().trim();
-      if (msg) this.sendToClient('tshark_log', { msg });
-    });
-
-    this.proc.on('close', (code) => {
-      log(`tshark client ${this.clientId} arrêté (code ${code})`);
-      this.running = false;
-      this.sendToClient('tshark_stopped', { code });
-      
-      // Décrémenter le compteur global
-      tsharkActiveClients--;
-      broadcastTsharkStatus();
-    });
-
-    this.proc.on('error', (err) => {
-      log(`tshark client ${this.clientId} erreur:`, err.message);
-      this.running = false;
-      this.sendToClient('tshark_error', { msg: err.message });
-      
-      // Décrémenter le compteur global
-      tsharkActiveClients--;
-      broadcastTsharkStatus();
-    });
-    
-    // Incrémenter le compteur global
-    tsharkActiveClients++;
-    broadcastTsharkStatus();
-  }
-
-  stop() {
-    if (this.proc) {
-      this.proc.kill('SIGTERM');
-      this.proc = null;
-      this.running = false;
-      log(`tshark client ${this.clientId} arrêté`);
-      
-      // Décrémenter le compteur global
-      tsharkActiveClients--;
-      broadcastTsharkStatus();
-    }
-  }
-
-  parseLine(line) {
-    try {
-      const pkt = JSON.parse(line);
-      if (!pkt.layers) return null;
-      
-      packetIdGlobal++;
-      const layers = pkt.layers;
-      
-      const summary = {
-        id: packetIdGlobal,
-        ts: pkt.timestamp || Date.now() / 1000,
-        arfcn:    this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_arfcn'),
-        uplink:   this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_uplink') === '1',
-        channel:  this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_chan_type'),
-        timeslot: this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_timeslot'),
-        fn:       this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_frame_nr'),
-        signal:   this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_signal_dbm'),
-        snr:      this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_snr_db'),
-        frameLen: this.extractField(layers, 'frame', 'frame_frame_len'),
-        protocol: '',
-        info:     '',
-        layers:   layers,
-      };
-      
-      const { protocol, info } = this.identifyProtocol(layers);
-      summary.protocol = protocol;
-      summary.info = info;
-      
-      return summary;
-    } catch (e) {
-      dbg('tshark parse error:', e.message);
-      return null;
-    }
-  }
-
-  extractField(layers, layer, field) {
-    if (!layers[layer]) return '';
-    const v = layers[layer][field];
-    return Array.isArray(v) ? v[0] || '' : v || '';
-  }
-
-  identifyProtocol(layers) {
-    const protoMap = [
-      ['gsm_a.dtap', 'GSM DTAP'], ['gsm_a.ccch', 'GSM CCCH'],
-      ['gsm_a.sacch', 'GSM SACCH'], ['gsm_a.rr', 'GSM RR'],
-      ['gsm_sms', 'GSM SMS'], ['gsm_a.bssmap', 'BSSMAP'],
-      ['gsm_map', 'GSM MAP'], ['lapdm', 'LAPDm'], ['gsmtap', 'GSMTAP'],
-    ];
-    for (const [key, name] of protoMap) {
-      if (layers[key]) return { protocol: name, info: this.extractInfo(layers[key]) };
-    }
-    return { protocol: 'GSMTAP', info: '' };
-  }
-
-  extractInfo(layer) {
-    for (const [k, v] of Object.entries(layer)) {
-      if (k.includes('msg_type') || k.includes('message_type') || k.includes('dtap_msg')) {
-        return Array.isArray(v) ? v[0] : String(v);
-      }
-    }
-    for (const [k, v] of Object.entries(layer)) {
-      const s = Array.isArray(v) ? v[0] : v;
-      if (typeof s === 'string' && s.length < 80 && !k.endsWith('_raw')) return s;
-    }
-    return '';
-  }
-
-  sendToClient(type, data) {
-    if (this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type, data, ts: Date.now() }));
-    }
-  }
+  const [_, num, ts, src, dst, proto, len, info] = match;
+  return {
+    ts: parseFloat(ts),
+    src,
+    dst,
+    protocol: proto,
+    length: parseInt(len, 10),
+    info: info.trim(),
+    uplink: src.startsWith('172.20.') ? 'UL' : 'DL', // approximatif
+  };
 }
 
-// ─── Fonction pour broadcast du statut tshark ────────────────
-function broadcastTsharkStatus() {
-  const statusMsg = JSON.stringify({ 
-    type: 'tshark_status', 
-    data: { active: tsharkActiveClients > 0, clientCount: tsharkActiveClients }, 
-    ts: Date.now() 
-  });
-  
-  for (const client of clients) {
-    if (client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(statusMsg);
+// ─── Serveur UDP pour recevoir les paquets de l'hôte ────────
+const udpServer = dgram.createSocket('udp4');
+
+udpServer.on('message', (msg, rinfo) => {
+  const line = msg.toString().trim();
+  if (!line) return;
+  const packet = parseTsharkLine(line);
+  if (packet) {
+    packet.id = ++packetIdGlobal;
+    const packetMsg = JSON.stringify({ type: 'packet', data: packet, ts: Date.now() });
+    for (const client of clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(packetMsg);
+      }
     }
   }
-}
+});
+
+udpServer.on('listening', () => {
+  const address = udpServer.address();
+  log(`UDP server listening on ${address.address}:${address.port} for tshark input`);
+});
+
+udpServer.on('error', (err) => {
+  log(`UDP server error: ${err.message}`);
+});
 
 // ─── HTTP Server ─────────────────────────────────────────────
 const MIME = {
@@ -467,7 +341,7 @@ const webDir = path.join(__dirname, 'web');
 const httpServer = http.createServer((req, res) => {
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ operators, activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
+    return res.end(JSON.stringify({ operators, activeOpIds }));
   }
   let fp = req.url === '/' ? '/index.html' : req.url;
   fp = path.join(webDir, fp);
@@ -481,16 +355,15 @@ const httpServer = http.createServer((req, res) => {
 
 // ─── WebSocket Server ────────────────────────────────────────
 const wss = new WebSocketServer({ server: httpServer });
-const clients = new Set(); // { ws, vtyMgr, tsharkSession }
+const clients = new Set(); // { ws, vtyMgr }
 
 wss.on('connection', (ws, req) => {
   log(`Client connected from ${req.socket.remoteAddress}`);
   
   const clientId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
   const vtyMgr = new VtySessionManager(ws);
-  const tsharkSession = new TsharkSession(ws, clientId);
   
-  clients.add({ ws, vtyMgr, tsharkSession, clientId });
+  clients.add({ ws, vtyMgr, clientId });
 
   ws.send(JSON.stringify({
     type: 'init',
@@ -498,7 +371,7 @@ wss.on('connection', (ws, req) => {
       operators, 
       activeOpIds, 
       vtyPorts: VTY_PORTS,
-      tsharkActive: tsharkActiveClients > 0 
+      sctpPorts: SCTP_PORTS.split(',').map(p => p.trim()).filter(Boolean)
     },
     ts: Date.now(),
   }));
@@ -517,12 +390,6 @@ wss.on('connection', (ws, req) => {
       case 'vty_disconnect': 
         vtyMgr.disconnect(msg.key); 
         break;
-      case 'tshark_start': 
-        tsharkSession.start(); 
-        break;
-      case 'tshark_stop':  
-        tsharkSession.stop(); 
-        break;
       case 'poll':         
         pollAll(); 
         break;
@@ -530,9 +397,8 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    clients.delete({ ws, vtyMgr, tsharkSession, clientId });
+    clients.delete({ ws, vtyMgr, clientId });
     vtyMgr.closeAll();
-    tsharkSession.stop();
     log(`Client ${clientId} disconnected`);
   });
 });
@@ -543,8 +409,10 @@ httpServer.listen(PORT, () => {
   activeOpIds = ops;
   log(`osmo-egprs-web listening on :${PORT}`);
   log(`Operators: [${ops.join(', ')}] (${ops.length})`);
-  log(`VTY: docker exec -i <container> telnet 127.0.0.1 <port>`);
+  log(`GSMTAP port: ${GSMTAP_UDP}, SCTP ports: ${SCTP_PORTS}`);
 });
+
+udpServer.bind(UDP_IN_PORT);
 
 setInterval(pollAll, POLL_MS);
 setTimeout(pollAll, 1500);
@@ -553,11 +421,11 @@ process.on('SIGINT', () => {
   log('Shutting down');
   
   for (const client of clients) {
-    client.tsharkSession.stop();
     client.vtyMgr.closeAll();
   }
   
   wss.close();
   httpServer.close();
+  udpServer.close();
   process.exit(0);
 });

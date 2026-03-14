@@ -30,10 +30,8 @@ echo "Starting..."
 docker run -d \
   --name "$WEB" \
   --network "$NETWORK" \
-  --cap-add=NET_RAW \
-  --cap-add=NET_ADMIN \
   -p 80:80 \
-  -p 4729:4729/udp \
+  -p 4730:4730/udp \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -e CONTAINER_PREFIX="$PREFIX" \
   -e POLL_INTERVAL=4000 \
@@ -45,4 +43,4 @@ echo "  ▸ Dashboard: http://localhost:80"
 echo "  ▸ Logs:      docker logs -f $WEB"
 echo "  ▸ Stop:      docker rm -f $WEB"
 echo ""
-echo "Run ./gsmtap-route.sh to redirect GSMTAP to the dashboard."
+echo "Run ./tshark-host.sh to send GSMTAP packets to the dashboard."
