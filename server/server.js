@@ -157,6 +157,7 @@ async function pollOperator(id) {
     if ((m = raw.match(/type\s+([\w-]+)/i)))          bts.type = m[1];
     if ((m = raw.match(/(\d+)\s+TRX/i)))              bts.trx_count = parseInt(m[1], 10);
     if ((m = raw.match(/BTS\s+(\d+)/i)))              bts.nr = parseInt(m[1], 10);
+    if ((m = raw.match(/ARFCN\s+(\d+)/i)))            bts.arfcn = parseInt(m[1], 10);
     op.components.bts = bts;
   } catch (e) { dbg(`Poll BSC op${id}:`, e.message); }
 
@@ -403,7 +404,7 @@ class TsharkSession {
           // Try to match with an ek packet for dissection
           const ek = this.ekPackets.shift();
           const packet = this.mergePacket(parsed, ek);
-          this.sendToClient('packet', packet);
+          if (packet) this.sendToClient('packet', packet);
         }
       }
     });
@@ -442,8 +443,11 @@ class TsharkSession {
         try {
           const pkt = JSON.parse(line);
           if (pkt.layers) {
+            // Drop TRX Clock / jitter noise (same filter as text parser)
+            const flen = pkt.layers.frame && pkt.layers.frame.frame_frame_len;
+            const frameLen = Array.isArray(flen) ? parseInt(flen[0]) : parseInt(flen);
+            if (frameLen === 210 || frameLen === 184 || frameLen === 185) continue;
             this.ekPackets.push(pkt);
-            // If text parser is behind, flush old ek packets
             while (this.ekPackets.length > 50) this.ekPackets.shift();
           }
         } catch {}
@@ -478,25 +482,34 @@ class TsharkSession {
   parseTextLine(line) {
     // Parse tshark text output line like:
     //   1 0.000000 172.20.0.12 → 172.20.0.1 GSMTAP 83 (CCCH) (RR) System Information Type 4
-    //   or with arrow variants: -> →
     const m = line.match(
       /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(?:→|->)\s+(\S+)\s+(\S+)\s+(\d+)\s*(.*)/
     );
     if (!m) return null;
 
+    const src = m[3], dst = m[4];
+
     packetIdGlobal++;
+    const info = m[7].trim() || m[5];
+
+    // Drop TRX Clock / jitter noise
+    if (info.includes('TRX Clock Ind') || info.includes('clock jitter')) return null;
+
     return {
       id: packetIdGlobal,
       ts: parseFloat(m[2]),
-      src: m[3],
-      dst: m[4],
+      src,
+      dst,
       protocol: m[5],
       length: parseInt(m[6]),
-      info: m[7].trim() || m[5],
+      info,
     };
   }
 
   mergePacket(text, ek) {
+    let opId = '';
+    let direction = '';
+
     const pkt = {
       id: text.id,
       ts: text.ts,
@@ -505,7 +518,6 @@ class TsharkSession {
       protocol: text.protocol,
       length: text.length,
       info: text.info,
-      // GSMTAP fields from ek if available
       arfcn: '',
       uplink: false,
       channel: '',
@@ -515,17 +527,21 @@ class TsharkSession {
       hexDump: null,
     };
 
+    let hasGsmtap = false;
+    let hasSctp = false;
+
     if (ek && ek.layers) {
       pkt.layers = ek.layers;
 
-      // Extract GSMTAP fields
       const gt = ek.layers.gsmtap;
       if (gt) {
+        hasGsmtap = true;
         pkt.arfcn    = this.getField(gt, 'gsmtap_gsmtap_arfcn');
         pkt.uplink   = this.getField(gt, 'gsmtap_gsmtap_uplink') === '1';
         pkt.channel  = this.getField(gt, 'gsmtap_gsmtap_chan_type');
         pkt.timeslot = this.getField(gt, 'gsmtap_gsmtap_timeslot');
         pkt.fn       = this.getField(gt, 'gsmtap_gsmtap_frame_nr');
+        direction = pkt.uplink ? 'UL' : 'DL';
       }
 
       // Extract hex dump
@@ -547,16 +563,47 @@ class TsharkSession {
         }
       }
 
-      // Extract SCTP info if present
       if (ek.layers.sctp) {
+        hasSctp = true;
         const sctp = ek.layers.sctp;
         const srcPort = this.getField(sctp, 'sctp_sctp_srcport');
         const dstPort = this.getField(sctp, 'sctp_sctp_dstport');
-        if (srcPort || dstPort) {
-          pkt.sctpPorts = `${srcPort} → ${dstPort}`;
-        }
+        if (srcPort || dstPort) pkt.sctpPorts = `${srcPort} → ${dstPort}`;
       }
     }
+
+    // Drop packets that are neither GSMTAP nor SCTP (forwarded noise)
+    const textProto = (text.protocol || '').toLowerCase();
+    const isKnown = hasGsmtap || hasSctp || textProto.includes('gsmtap') || textProto.includes('sctp') || textProto.includes('m3ua');
+    if (!isKnown) return null;
+
+    // ARFCN → Operator: base=514, step=2. 514=OP1, 516=OP2, 518=OP3...
+    if (pkt.arfcn) {
+      const arfcn = parseInt(pkt.arfcn);
+      const opNum = Math.floor((arfcn - 514) / 2) + 1;
+      if (opNum >= 1 && opNum <= 24) {
+        opId = `OP${opNum}`;
+      } else {
+        opId = `A${arfcn}`;
+      }
+    }
+
+    if (hasSctp) {
+      // SCTP: derive ops from IPs
+      const ipToOp = (ip) => {
+        const m = ip && ip.match(/^172\.20\.0\.(\d+)$/);
+        if (m) { const n = parseInt(m[1]); if (n >= 11) return `OP${n-10}`; }
+        return '';
+      };
+      const sOp = ipToOp(text.src);
+      const dOp = ipToOp(text.dst);
+      if (sOp && dOp) { opId = `${sOp}/${dOp}`; direction = `${sOp}→${dOp}`; }
+      else if (sOp) { opId = sOp; direction = 'UL'; }
+      else if (dOp) { opId = dOp; direction = 'DL'; }
+    }
+
+    pkt.opLabel = opId || '—';
+    pkt.direction = direction || (pkt.uplink ? 'UL' : 'DL');
 
     return pkt;
   }

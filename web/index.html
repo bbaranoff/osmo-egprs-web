@@ -329,7 +329,7 @@
 
     <div id="capture-area">
       <div id="cap-toolbar">
-        <input type="text" id="cap-filter" placeholder="Filter: gsmtap, sctp, rr, sms, src=172.20… " spellcheck="false">
+        <input type="text" id="cap-filter" placeholder="Filter: ul, dl, op=1, sctp, rr, sms …" spellcheck="false">
         <span style="font-size:11px;color:var(--t3);white-space:nowrap;font-family:'Fira Code',monospace" id="pkt-counter">0 pkts</span>
       </div>
       <div id="pkt-list-wrap">
@@ -337,8 +337,8 @@
           <thead><tr>
             <th style="width:40px">#</th>
             <th style="width:70px">TIME</th>
-            <th style="width:110px">SOURCE</th>
-            <th style="width:110px">DEST</th>
+            <th style="width:40px">DIR</th>
+            <th style="width:55px">OP</th>
             <th style="width:80px">PROTO</th>
             <th style="width:40px">LEN</th>
             <th>INFO</th>
@@ -507,11 +507,11 @@ document.getElementById('cap-filter').addEventListener('input', e => {
 function matchFilter(p) {
   if (!filterText) return true;
   const f = filterText;
-  const sm = f.match(/^src\s*=?\s*(.+)/);
-  if (sm) return (p.src||'').includes(sm[1]);
-  const dm = f.match(/^dst\s*=?\s*(.+)/);
-  if (dm) return (p.dst||'').includes(dm[1]);
-  return `${p.protocol} ${p.info} ${p.src} ${p.dst} ${p.arfcn}`.toLowerCase().includes(f);
+  if (f==='ul') return p.direction==='UL' || p.uplink;
+  if (f==='dl') return p.direction==='DL' || !p.uplink;
+  const om = f.match(/^op\s*=?\s*(\d+)$/i);
+  if (om) return (p.opLabel||'').toLowerCase().includes('op'+om[1]);
+  return `${p.protocol} ${p.info} ${p.opLabel} ${p.direction} ${p.src} ${p.dst} ${p.arfcn}`.toLowerCase().includes(f);
 }
 
 function addPacket(p) {
@@ -538,7 +538,10 @@ function makePktRow(p) {
   const ts = typeof p.ts==='number' ? p.ts.toFixed(3) : '—';
   const pc = (p.protocol||'').toLowerCase();
   const cls = pc.includes('sctp')?'proto-sctp':pc.includes('m3ua')?'proto-m3ua':pc.includes('gsmtap')?'proto-gsmtap':pc.includes('rr')?'proto-rr':pc.includes('sms')?'proto-sms':pc.includes('dtap')?'proto-dtap':'proto-def';
-  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2);font-size:11px">${ts}</td><td style="color:var(--cyan);font-size:11px">${esc(p.src||'')}</td><td style="color:var(--violet);font-size:11px">${esc(p.dst||'')}</td><td><span class="proto ${cls}">${esc(p.protocol||'—')}</span></td><td style="color:var(--t3)">${p.length||''}</td><td style="color:var(--t1);max-width:500px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
+  const dir = p.direction || (p.uplink ? 'UL' : 'DL');
+  const dirCls = dir === 'UL' ? 'color:var(--red);font-weight:700' : dir === 'DL' ? 'color:var(--green);font-weight:700' : 'color:var(--t2)';
+  const opLabel = p.opLabel || '—';
+  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2);font-size:11px">${ts}</td><td style="${dirCls};font-size:11px">${esc(dir)}</td><td style="color:var(--cyan);font-size:11px;font-weight:600">${esc(opLabel)}</td><td><span class="proto ${cls}">${esc(p.protocol||'—')}</span></td><td style="color:var(--t3)">${p.length||''}</td><td style="color:var(--t1);max-width:500px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
   return tr;
 }
 
