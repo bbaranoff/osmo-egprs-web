@@ -13,19 +13,68 @@ const PREFIX     = process.env.CONTAINER_PREFIX || 'osmo-operator-';
 const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.includes('--verbose');
 
+// PulseAudio — for audio streaming to browser
+const REAL_UID   = process.env.SUDO_UID || process.env.UID || '1000';
+const PULSE_SRV  = process.env.PULSE_SERVER || `/run/user/${REAL_UID}/pulse/native`;
+const AUDIO_SINK = process.env.AUDIO_SINK || 'gsm_audio.monitor';
+
 const VTY_PORTS = {
   bsc: 4242, msc: 4254, hlr: 4258, mgw: 4243, stp: 4239,
   bts: 4241, ggsn: 4260, sgsn: 4245, pcu: 4240, baseband: 4247,
 };
 
+const VTY_RETRY_MAX = 3;
+const VTY_RETRY_DELAY = 2000;
+
 function log(...a)  { console.log(`[${new Date().toISOString()}]`, ...a); }
 function dbg(...a)  { if (VERBOSE) console.log('[DBG]', ...a); }
+
+// ─── GSMTAP Channel Type Map ─────────────────────────────────
+const GSMTAP_CHAN = {
+  '0': 'UNKNOWN', '1': 'BCCH', '2': 'CCCH', '3': 'SDCCH4',
+  '4': 'SDCCH8', '5': 'BCCH', '6': 'SDCCH', '7': 'TCH/F',
+  '8': 'TCH/H', '9': 'PACCH', '10': 'CBCH52', '11': 'PDCH',
+  '12': 'PTCCH', '13': 'CBCH51', '128': 'ACCH',
+};
+
+const GSMTAP_CHAN_SUBTYPES = {
+  '0x0000': 'BCCH', '0x0001': 'CCCH', '0x0002': 'SDCCH/4',
+  '0x0004': 'SDCCH/8', '0x0008': 'FACCH/F', '0x0009': 'FACCH/H',
+  '0x000a': 'SACCH/TF', '0x000b': 'SACCH/TH',
+};
+
+// GSM A RR message type names
+const RR_MSG_TYPES = {
+  '0': 'System Information Type 13',
+  '1': 'System Information Type 14',
+  '2': 'System Information Type 2bis',
+  '3': 'System Information Type 2ter',
+  '6': 'System Information Type 9',
+  '13': 'Channel Release',
+  '21': 'Measurement Report',
+  '25': 'System Information Type 5',
+  '26': 'System Information Type 5bis',
+  '27': 'System Information Type 5ter',
+  '28': 'System Information Type 6',
+  '29': 'Paging Response',
+  '32': 'Paging Request Type 1',
+  '33': 'Paging Request Type 2',
+  '34': 'Paging Request Type 3',
+  '35': 'Assignment Command',
+  '41': 'Immediate Assignment',
+  '57': 'Ciphering Mode Command',
+  '59': 'System Information Type 1',
+  '26': 'System Information Type 2',
+  '27': 'System Information Type 3',
+  '28': 'System Information Type 4',
+  '63': 'Handover Command',
+};
 
 // ─── State ───────────────────────────────────────────────────
 let operators = {};
 let activeOpIds = [];
 let packetIdGlobal = 0;
-let tsharkActiveClients = 0; // Nouveau compteur de clients actifs
+let tsharkActiveClients = 0;
 
 // ─── Docker Discovery ────────────────────────────────────────
 function discoverOperators() {
@@ -95,12 +144,10 @@ async function pollOperator(id) {
   op.online = true;
   op.lastPoll = Date.now();
 
-  // BSC → BTS info
   try {
     const raw = await dockerExecVty(container, VTY_PORTS.bsc, ['enable', 'show bts 0']);
     const bts = {};
     let m;
-    
     if ((m = raw.match(/CI\s+(\d+)/i)))               bts.ci = parseInt(m[1], 10);
     if ((m = raw.match(/LAC\s+(\d+)/i)))              bts.lac = parseInt(m[1], 10);
     if ((m = raw.match(/BSIC\s+(\d+)/i)))             bts.bsic = parseInt(m[1], 10);
@@ -110,40 +157,28 @@ async function pollOperator(id) {
     if ((m = raw.match(/type\s+([\w-]+)/i)))          bts.type = m[1];
     if ((m = raw.match(/(\d+)\s+TRX/i)))              bts.trx_count = parseInt(m[1], 10);
     if ((m = raw.match(/BTS\s+(\d+)/i)))              bts.nr = parseInt(m[1], 10);
-    
-    const bandToArfcn = {
-      'GSM450': 259, 'GSM480': 306, 'GSM750': 438,
-      'GSM850': 128, 'GSM900': 1, 'DCS1800': 512, 'PCS1900': 512
-    };
-    
-    if (bts.band && bandToArfcn[bts.band]) {
-      bts.arfcn_base = bandToArfcn[bts.band];
-    }
-    
-    if ((m = raw.match(/RACH\s+(\w+)/i)))             bts.rach = m[1];
-    if ((m = raw.match(/Timing\s+Advance\s+(\d+)/i))) bts.ta = parseInt(m[1], 10);
-    
     op.components.bts = bts;
-    
-    if (VERBOSE) dbg(`BTS info op${id}:`, JSON.stringify(bts));
   } catch (e) { dbg(`Poll BSC op${id}:`, e.message); }
 
-  // MSC → subscribers
   try {
     const raw = await dockerExecVty(container, VTY_PORTS.msc, ['enable', 'show subscriber all']);
     op.mobiles = [];
-    
     const lines = raw.split('\n');
     for (const line of lines) {
       const imsiMatch = line.match(/(\d{15})/);
       if (imsiMatch) {
-        op.mobiles.push({ 
-          imsi: imsiMatch[1],
-          raw: line.trim()
-        });
+        op.mobiles.push({ imsi: imsiMatch[1], raw: line.trim() });
       }
     }
   } catch (e) { dbg(`Poll MSC op${id}:`, e.message); }
+
+  try {
+    const raw = execSync(
+      `docker exec ${container} bash -c "ss -tlnp 2>/dev/null | grep :7890 | wc -l"`,
+      { timeout: 3000, encoding: 'utf-8' }
+    ).trim();
+    op.smsRelayUp = parseInt(raw) > 0;
+  } catch { op.smsRelayUp = false; }
 
   operators[id] = op;
 }
@@ -154,13 +189,13 @@ async function pollAll() {
     if (!activeOpIds.includes(id)) delete operators[id];
   }
   await Promise.allSettled(activeOpIds.map(id => pollOperator(id)));
-  
-  const stateMsg = JSON.stringify({ 
-    type: 'state', 
-    data: { operators, activeOpIds }, 
-    ts: Date.now() 
+
+  const stateMsg = JSON.stringify({
+    type: 'state',
+    data: { operators, activeOpIds },
+    ts: Date.now()
   });
-  
+
   for (const client of clients) {
     if (client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(stateMsg);
@@ -168,52 +203,85 @@ async function pollAll() {
   }
 }
 
-// ─── Interactive VTY Session ─────────────────────────────────
+// ─── Interactive VTY Session (with retry) ────────────────────
 class VtySession {
   constructor(ws, key, container, port, component, opId, ip) {
     this.ws = ws;
     this.key = key;
+    this.container = container;
+    this.port = port;
+    this.component = component;
+    this.opId = opId;
+    this.ip = ip || '127.0.0.1';
     this.proc = null;
     this.alive = false;
+    this.retries = 0;
+    this._connect();
+  }
 
-    const targetIp = ip || '127.0.0.1';
-    log(`VTY open: docker exec -i ${container} telnet ${targetIp} ${port}`);
+  _connect() {
+    log(`VTY open: docker exec -i ${this.container} telnet ${this.ip} ${this.port} (attempt ${this.retries + 1})`);
 
     this.proc = spawn('docker', [
-      'exec', '-i', container, 'telnet', targetIp, String(port)
+      'exec', '-i', this.container, 'telnet', this.ip, String(this.port)
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
     this.alive = true;
+    let gotData = false;
 
     this.proc.stdout.on('data', d => {
-      this._send('vty_data', { key, data: d.toString() });
+      gotData = true;
+      this._send('vty_data', { key: this.key, data: d.toString() });
     });
 
     this.proc.stderr.on('data', d => {
-      this._send('vty_data', { key, data: d.toString() });
+      const str = d.toString();
+      if (str.includes('Connection refused') || str.includes('Unable to connect')) {
+        this.alive = false;
+        if (this.retries < VTY_RETRY_MAX) {
+          this.retries++;
+          this._send('vty_data', {
+            key: this.key,
+            data: `\r\n--- connection refused, retry ${this.retries}/${VTY_RETRY_MAX} in ${VTY_RETRY_DELAY/1000}s ---\r\n`
+          });
+          setTimeout(() => this._connect(), VTY_RETRY_DELAY);
+          return;
+        }
+      }
+      this._send('vty_data', { key: this.key, data: str });
     });
 
     this.proc.on('close', code => {
+      if (!gotData && this.retries < VTY_RETRY_MAX) {
+        this.retries++;
+        this._send('vty_data', {
+          key: this.key,
+          data: `\r\n--- session closed (code ${code}), retry ${this.retries}/${VTY_RETRY_MAX} ---\r\n`
+        });
+        setTimeout(() => this._connect(), VTY_RETRY_DELAY);
+        return;
+      }
       this.alive = false;
-      this._send('vty_data', { key, data: `\r\n--- session closed (code ${code}) ---\r\n` });
-      this._send('vty_disconnected', { key });
-      log(`VTY closed: ${key} (code ${code})`);
+      this._send('vty_data', { key: this.key, data: `\r\n--- session closed (code ${code}) ---\r\n` });
+      this._send('vty_disconnected', { key: this.key });
+      log(`VTY closed: ${this.key} (code ${code})`);
     });
 
     this.proc.on('error', err => {
       this.alive = false;
-      this._send('vty_error', { key, msg: err.message });
+      this._send('vty_error', { key: this.key, msg: err.message });
     });
 
     setTimeout(() => {
       if (!this.alive) return;
       this.write('enable');
-      setTimeout(() => {
-        if (!this.alive) return;
-      }, 500);
     }, 1000);
 
-    this._send('vty_connected', { key, opId, component, port });
+    this._send('vty_connected', {
+      key: this.key, opId: this.opId,
+      component: this.component, port: this.port,
+      retry: this.retries
+    });
   }
 
   write(cmd) {
@@ -249,10 +317,8 @@ class VtySessionManager {
       this.sessions.get(key).close();
       this.sessions.delete(key);
     }
-
     const port = VTY_PORTS[component];
     if (!port) return this._send('vty_error', { key, msg: `Unknown component: ${component}` });
-
     const container = `${PREFIX}${opId}`;
     const session = new VtySession(this.ws, key, container, port, component, opId, ip);
     this.sessions.set(key, session);
@@ -284,42 +350,59 @@ class VtySessionManager {
   }
 }
 
-// ─── tshark Capture par Client ───────────────────────────────
+// ─── tshark Capture: GSMTAP + SCTP with text parse ──────────
 class TsharkSession {
   constructor(ws, clientId) {
     this.ws = ws;
     this.clientId = clientId;
     this.proc = null;
+    this.ekProc = null;
     this.running = false;
     this.buffer = '';
+    this.ekBuffer = '';
+    this.ekPackets = [];  // queue of parsed ek JSON packets
+    this.textPackets = []; // queue of parsed text summary lines
   }
 
   start() {
     if (this.running) return;
-    
-    log(`Démarrage tshark pour client ${this.clientId}`);
-    
+    log(`tshark start for client ${this.clientId}`);
+    this.running = true;
+
+    // Process 1: tshark text output for nice summary lines
     this.proc = spawn('tshark', [
-      '-i', 'any', 
-      '-f', `udp port ${GSMTAP_UDP}`,
-      '-T', 'ek', 
-      '-l', 
+      '-i', 'any',
+      '-f', `udp port ${GSMTAP_UDP} or sctp`,
+      '-l',
       '-n',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    this.running = true;
-    this.buffer = '';
+    // Process 2: tshark -T ek for JSON dissection + hex
+    this.ekProc = spawn('tshark', [
+      '-i', 'any',
+      '-f', `udp port ${GSMTAP_UDP} or sctp`,
+      '-T', 'ek',
+      '-l',
+      '-n',
+      '-x',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
+    this.buffer = '';
+    this.ekBuffer = '';
+
+    // Text output: parse one-line summaries
     this.proc.stdout.on('data', chunk => {
       this.buffer += chunk.toString();
       let nl;
       while ((nl = this.buffer.indexOf('\n')) !== -1) {
         const line = this.buffer.substring(0, nl).trim();
         this.buffer = this.buffer.substring(nl + 1);
-        if (!line || line.startsWith('{"index"')) continue;
-        
-        const packet = this.parseLine(line);
-        if (packet) {
+        if (!line) continue;
+        const parsed = this.parseTextLine(line);
+        if (parsed) {
+          // Try to match with an ek packet for dissection
+          const ek = this.ekPackets.shift();
+          const packet = this.mergePacket(parsed, ek);
           this.sendToClient('packet', packet);
         }
       }
@@ -327,30 +410,50 @@ class TsharkSession {
 
     this.proc.stderr.on('data', d => {
       const msg = d.toString().trim();
-      if (msg) this.sendToClient('tshark_log', { msg });
+      if (msg && !msg.startsWith('Capturing on')) {
+        this.sendToClient('tshark_log', { msg });
+      }
     });
 
     this.proc.on('close', (code) => {
-      log(`tshark client ${this.clientId} arrêté (code ${code})`);
+      log(`tshark text client ${this.clientId} stopped (code ${code})`);
       this.running = false;
       this.sendToClient('tshark_stopped', { code });
-      
-      // Décrémenter le compteur global
       tsharkActiveClients--;
       broadcastTsharkStatus();
     });
 
     this.proc.on('error', (err) => {
-      log(`tshark client ${this.clientId} erreur:`, err.message);
+      log(`tshark text client ${this.clientId} error:`, err.message);
       this.running = false;
       this.sendToClient('tshark_error', { msg: err.message });
-      
-      // Décrémenter le compteur global
       tsharkActiveClients--;
       broadcastTsharkStatus();
     });
-    
-    // Incrémenter le compteur global
+
+    // EK JSON output: parse for dissection data
+    this.ekProc.stdout.on('data', chunk => {
+      this.ekBuffer += chunk.toString();
+      let nl;
+      while ((nl = this.ekBuffer.indexOf('\n')) !== -1) {
+        const line = this.ekBuffer.substring(0, nl).trim();
+        this.ekBuffer = this.ekBuffer.substring(nl + 1);
+        if (!line || line.startsWith('{"index"')) continue;
+        try {
+          const pkt = JSON.parse(line);
+          if (pkt.layers) {
+            this.ekPackets.push(pkt);
+            // If text parser is behind, flush old ek packets
+            while (this.ekPackets.length > 50) this.ekPackets.shift();
+          }
+        } catch {}
+      }
+    });
+
+    this.ekProc.stderr.on('data', () => {}); // ignore
+    this.ekProc.on('close', () => {});
+    this.ekProc.on('error', () => {});
+
     tsharkActiveClients++;
     broadcastTsharkStatus();
   }
@@ -359,80 +462,109 @@ class TsharkSession {
     if (this.proc) {
       this.proc.kill('SIGTERM');
       this.proc = null;
+    }
+    if (this.ekProc) {
+      this.ekProc.kill('SIGTERM');
+      this.ekProc = null;
+    }
+    if (this.running) {
       this.running = false;
-      log(`tshark client ${this.clientId} arrêté`);
-      
-      // Décrémenter le compteur global
+      log(`tshark client ${this.clientId} stopped`);
       tsharkActiveClients--;
       broadcastTsharkStatus();
     }
   }
 
-  parseLine(line) {
-    try {
-      const pkt = JSON.parse(line);
-      if (!pkt.layers) return null;
-      
-      packetIdGlobal++;
-      const layers = pkt.layers;
-      
-      const summary = {
-        id: packetIdGlobal,
-        ts: pkt.timestamp || Date.now() / 1000,
-        arfcn:    this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_arfcn'),
-        uplink:   this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_uplink') === '1',
-        channel:  this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_chan_type'),
-        timeslot: this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_timeslot'),
-        fn:       this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_frame_nr'),
-        signal:   this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_signal_dbm'),
-        snr:      this.extractField(layers, 'gsmtap', 'gsmtap_gsmtap_snr_db'),
-        frameLen: this.extractField(layers, 'frame', 'frame_frame_len'),
-        protocol: '',
-        info:     '',
-        layers:   layers,
-      };
-      
-      const { protocol, info } = this.identifyProtocol(layers);
-      summary.protocol = protocol;
-      summary.info = info;
-      
-      return summary;
-    } catch (e) {
-      dbg('tshark parse error:', e.message);
-      return null;
-    }
+  parseTextLine(line) {
+    // Parse tshark text output line like:
+    //   1 0.000000 172.20.0.12 → 172.20.0.1 GSMTAP 83 (CCCH) (RR) System Information Type 4
+    //   or with arrow variants: -> →
+    const m = line.match(
+      /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(?:→|->)\s+(\S+)\s+(\S+)\s+(\d+)\s*(.*)/
+    );
+    if (!m) return null;
+
+    packetIdGlobal++;
+    return {
+      id: packetIdGlobal,
+      ts: parseFloat(m[2]),
+      src: m[3],
+      dst: m[4],
+      protocol: m[5],
+      length: parseInt(m[6]),
+      info: m[7].trim() || m[5],
+    };
   }
 
-  extractField(layers, layer, field) {
-    if (!layers[layer]) return '';
-    const v = layers[layer][field];
-    return Array.isArray(v) ? v[0] || '' : v || '';
-  }
+  mergePacket(text, ek) {
+    const pkt = {
+      id: text.id,
+      ts: text.ts,
+      src: text.src,
+      dst: text.dst,
+      protocol: text.protocol,
+      length: text.length,
+      info: text.info,
+      // GSMTAP fields from ek if available
+      arfcn: '',
+      uplink: false,
+      channel: '',
+      timeslot: '',
+      fn: '',
+      layers: null,
+      hexDump: null,
+    };
 
-  identifyProtocol(layers) {
-    const protoMap = [
-      ['gsm_a.dtap', 'GSM DTAP'], ['gsm_a.ccch', 'GSM CCCH'],
-      ['gsm_a.sacch', 'GSM SACCH'], ['gsm_a.rr', 'GSM RR'],
-      ['gsm_sms', 'GSM SMS'], ['gsm_a.bssmap', 'BSSMAP'],
-      ['gsm_map', 'GSM MAP'], ['lapdm', 'LAPDm'], ['gsmtap', 'GSMTAP'],
-    ];
-    for (const [key, name] of protoMap) {
-      if (layers[key]) return { protocol: name, info: this.extractInfo(layers[key]) };
-    }
-    return { protocol: 'GSMTAP', info: '' };
-  }
+    if (ek && ek.layers) {
+      pkt.layers = ek.layers;
 
-  extractInfo(layer) {
-    for (const [k, v] of Object.entries(layer)) {
-      if (k.includes('msg_type') || k.includes('message_type') || k.includes('dtap_msg')) {
-        return Array.isArray(v) ? v[0] : String(v);
+      // Extract GSMTAP fields
+      const gt = ek.layers.gsmtap;
+      if (gt) {
+        pkt.arfcn    = this.getField(gt, 'gsmtap_gsmtap_arfcn');
+        pkt.uplink   = this.getField(gt, 'gsmtap_gsmtap_uplink') === '1';
+        pkt.channel  = this.getField(gt, 'gsmtap_gsmtap_chan_type');
+        pkt.timeslot = this.getField(gt, 'gsmtap_gsmtap_timeslot');
+        pkt.fn       = this.getField(gt, 'gsmtap_gsmtap_frame_nr');
+      }
+
+      // Extract hex dump
+      if (ek.layers.frame && ek.layers.frame.frame_frame_raw) {
+        const rawArr = ek.layers.frame.frame_frame_raw;
+        pkt.hexDump = Array.isArray(rawArr) ? rawArr[0] : rawArr;
+      } else {
+        for (const [k, v] of Object.entries(ek.layers)) {
+          if (k.endsWith('_raw') && typeof v === 'object') {
+            const vals = Array.isArray(v) ? v : [v];
+            for (const val of vals) {
+              if (typeof val === 'string' && val.length > 10) {
+                pkt.hexDump = val;
+                break;
+              }
+            }
+          }
+          if (pkt.hexDump) break;
+        }
+      }
+
+      // Extract SCTP info if present
+      if (ek.layers.sctp) {
+        const sctp = ek.layers.sctp;
+        const srcPort = this.getField(sctp, 'sctp_sctp_srcport');
+        const dstPort = this.getField(sctp, 'sctp_sctp_dstport');
+        if (srcPort || dstPort) {
+          pkt.sctpPorts = `${srcPort} → ${dstPort}`;
+        }
       }
     }
-    for (const [k, v] of Object.entries(layer)) {
-      const s = Array.isArray(v) ? v[0] : v;
-      if (typeof s === 'string' && s.length < 80 && !k.endsWith('_raw')) return s;
-    }
-    return '';
+
+    return pkt;
+  }
+
+  getField(layer, field) {
+    if (!layer) return '';
+    const v = layer[field];
+    return Array.isArray(v) ? v[0] || '' : v || '';
   }
 
   sendToClient(type, data) {
@@ -442,14 +574,12 @@ class TsharkSession {
   }
 }
 
-// ─── Fonction pour broadcast du statut tshark ────────────────
 function broadcastTsharkStatus() {
-  const statusMsg = JSON.stringify({ 
-    type: 'tshark_status', 
-    data: { active: tsharkActiveClients > 0, clientCount: tsharkActiveClients }, 
-    ts: Date.now() 
+  const statusMsg = JSON.stringify({
+    type: 'tshark_status',
+    data: { active: tsharkActiveClients > 0, clientCount: tsharkActiveClients },
+    ts: Date.now()
   });
-  
   for (const client of clients) {
     if (client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(statusMsg);
@@ -461,6 +591,7 @@ function broadcastTsharkStatus() {
 const MIME = {
   '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.woff2': 'font/woff2', '.woff': 'font/woff',
 };
 const webDir = path.join(__dirname, 'web');
 
@@ -469,6 +600,7 @@ const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ operators, activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
   }
+
   let fp = req.url === '/' ? '/index.html' : req.url;
   fp = path.join(webDir, fp);
   const ct = MIME[path.extname(fp)] || 'application/octet-stream';
@@ -481,61 +613,113 @@ const httpServer = http.createServer((req, res) => {
 
 // ─── WebSocket Server ────────────────────────────────────────
 const wss = new WebSocketServer({ server: httpServer });
-const clients = new Set(); // { ws, vtyMgr, tsharkSession }
+const clients = new Set();
 
 wss.on('connection', (ws, req) => {
   log(`Client connected from ${req.socket.remoteAddress}`);
-  
   const clientId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
   const vtyMgr = new VtySessionManager(ws);
   const tsharkSession = new TsharkSession(ws, clientId);
-  
-  clients.add({ ws, vtyMgr, tsharkSession, clientId });
+  const clientObj = { ws, vtyMgr, tsharkSession, clientId, audioProc: null };
+  clients.add(clientObj);
 
   ws.send(JSON.stringify({
     type: 'init',
-    data: { 
-      operators, 
-      activeOpIds, 
-      vtyPorts: VTY_PORTS,
-      tsharkActive: tsharkActiveClients > 0 
+    data: {
+      operators, activeOpIds, vtyPorts: VTY_PORTS,
+      tsharkActive: tsharkActiveClients > 0
     },
     ts: Date.now(),
   }));
 
   ws.on('message', raw => {
+    // Binary frames ignored (we only send binary)
+    if (typeof raw !== 'string' && !Buffer.isBuffer(raw)) return;
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
-    
     switch (msg.type) {
-      case 'vty_connect':  
-        vtyMgr.connect(msg.opId, msg.component, msg.ip); 
-        break;
-      case 'vty_exec':     
-        vtyMgr.exec(msg.key, msg.cmd); 
-        break;
-      case 'vty_disconnect': 
-        vtyMgr.disconnect(msg.key); 
-        break;
-      case 'tshark_start': 
-        tsharkSession.start(); 
-        break;
-      case 'tshark_stop':  
-        tsharkSession.stop(); 
-        break;
-      case 'poll':         
-        pollAll(); 
-        break;
+      case 'vty_connect':   vtyMgr.connect(msg.opId, msg.component, msg.ip); break;
+      case 'vty_exec':      vtyMgr.exec(msg.key, msg.cmd); break;
+      case 'vty_disconnect': vtyMgr.disconnect(msg.key); break;
+      case 'tshark_start':  tsharkSession.start(); break;
+      case 'tshark_stop':   tsharkSession.stop(); break;
+      case 'poll':          pollAll(); break;
+      case 'audio_start':   startAudio(clientObj); break;
+      case 'audio_stop':    stopAudio(clientObj); break;
     }
   });
 
   ws.on('close', () => {
-    clients.delete({ ws, vtyMgr, tsharkSession, clientId });
+    clients.delete(clientObj);
     vtyMgr.closeAll();
     tsharkSession.stop();
+    stopAudio(clientObj);
     log(`Client ${clientId} disconnected`);
   });
 });
+
+// ─── Audio: PCM via WebSocket (low latency) ─────────────────
+// Spawns: docker exec -e PULSE_SERVER=... osmo-operator-1 parec --format=s16le --rate=8000 --channels=1 -d gsm_audio.monitor
+// Sends raw s16le PCM chunks as binary WebSocket frames → browser Web Audio API
+
+function startAudio(clientObj) {
+  if (clientObj.audioProc) return; // already streaming
+
+  const container = `${PREFIX}1`; // op1 has PulseAudio
+  log(`Audio start for client ${clientObj.clientId} via ${container}`);
+
+  const proc = spawn('docker', [
+    'exec', '-e', `PULSE_SERVER=${PULSE_SRV}`,
+    container,
+    'parec',
+    '--format=s16le',
+    '--rate=8000',
+    '--channels=1',
+    '--latency-msec=20',
+    '-d', AUDIO_SINK,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  clientObj.audioProc = proc;
+
+  proc.stdout.on('data', chunk => {
+    if (clientObj.ws.readyState === WebSocket.OPEN) {
+      clientObj.ws.send(chunk, { binary: true });
+    }
+  });
+
+  proc.stderr.on('data', d => {
+    const msg = d.toString().trim();
+    if (msg) dbg('parec:', msg);
+  });
+
+  proc.on('error', err => {
+    log(`Audio parec error: ${err.message}`);
+    clientObj.audioProc = null;
+    if (clientObj.ws.readyState === WebSocket.OPEN) {
+      clientObj.ws.send(JSON.stringify({ type: 'audio_error', data: { msg: err.message } }));
+    }
+  });
+
+  proc.on('close', code => {
+    log(`Audio parec ended (code ${code}) for client ${clientObj.clientId}`);
+    clientObj.audioProc = null;
+    if (clientObj.ws.readyState === WebSocket.OPEN) {
+      clientObj.ws.send(JSON.stringify({ type: 'audio_stopped', data: { code } }));
+    }
+  });
+
+  if (clientObj.ws.readyState === WebSocket.OPEN) {
+    clientObj.ws.send(JSON.stringify({ type: 'audio_started', data: { rate: 8000, channels: 1, format: 's16le' } }));
+  }
+}
+
+function stopAudio(clientObj) {
+  if (clientObj.audioProc) {
+    log(`Audio stop for client ${clientObj.clientId}`);
+    try { clientObj.audioProc.kill('SIGTERM'); } catch {}
+    clientObj.audioProc = null;
+  }
+}
 
 // ─── Boot ────────────────────────────────────────────────────
 httpServer.listen(PORT, () => {
@@ -543,7 +727,7 @@ httpServer.listen(PORT, () => {
   activeOpIds = ops;
   log(`osmo-egprs-web listening on :${PORT}`);
   log(`Operators: [${ops.join(', ')}] (${ops.length})`);
-  log(`VTY: docker exec -i <container> telnet 127.0.0.1 <port>`);
+  log(`Capture filter: udp port ${GSMTAP_UDP} or sctp`);
 });
 
 setInterval(pollAll, POLL_MS);
@@ -551,12 +735,11 @@ setTimeout(pollAll, 1500);
 
 process.on('SIGINT', () => {
   log('Shutting down');
-  
   for (const client of clients) {
     client.tsharkSession.stop();
     client.vtyMgr.closeAll();
+    stopAudio(client);
   }
-  
   wss.close();
   httpServer.close();
   process.exit(0);

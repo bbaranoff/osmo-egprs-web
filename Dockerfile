@@ -5,6 +5,7 @@ RUN apk add --no-cache \
     tshark \
     docker-cli \
     libcap \
+    ffmpeg \
   && setcap cap_net_raw,cap_net_admin+eip $(which dumpcap) \
   && tshark --version | head -1
 

@@ -1,7 +1,7 @@
 {
   "name": "osmo-egprs-web",
-  "version": "2.0.0",
-  "description": "Web dashboard for osmo_egprs — VTY console + tshark capture",
+  "version": "2.1.0",
+  "description": "Web dashboard for osmo_egprs — VTY console + tshark capture + hex dissection",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "dependencies": { "ws": "^8.16.0" }

@@ -2,775 +2,302 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>osmo_egprs — Operations Console</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
 
-  /* ═══ Theme variables ═══ */
+  /* ═══ Solarized Theme ═══ */
   [data-theme="dark"] {
-    --bg-0: #0b0e14; --bg-1: #10141c; --bg-2: #161c28; --bg-3: #1e2636;
-    --bg-4: #283040; --bg-5: #323e52;
-    --border: #1e2a3a; --border-b: #2e3e54;
-    --t0: #ecf0f6; --t1: #b0bcd0; --t2: #728aa8; --t3: #485a74;
-    --green: #22d67a; --red: #f05555; --amber: #f0a820;
-    --cyan: #28c8e0; --blue: #4888ff; --purple: #a070ff; --pink: #f060a0;
-    --term-bg: #080a0f; --term-text: #c8d4e0;
-    --glow-g: 0 0 6px rgba(34,214,122,0.25);
-    --glow-r: 0 0 6px rgba(240,85,85,0.25);
-    --shadow: 0 2px 12px rgba(0,0,0,0.5);
-    --logo-filter: none;
+    --base03: #002b36; --base02: #073642; --base01: #586e75;
+    --base00: #657b83; --base0: #839496; --base1: #93a1a1;
+    --base2: #eee8d5; --base3: #fdf6e3;
+    --yellow: #b58900; --orange: #cb4b16; --red: #dc322f;
+    --magenta: #d33682; --violet: #6c71c4; --blue: #268bd2;
+    --cyan: #2aa198; --green: #859900;
+
+    --bg-0: #001e26; --bg-1: #002b36; --bg-2: #073642; --bg-3: #0a4050;
+    --border: #0d4f5a; --border-b: #11616e;
+    --t0: #fdf6e3; --t1: #eee8d5; --t2: #93a1a1; --t3: #586e75;
+    --term-bg: #001a20; --term-text: #93a1a1;
+    --shadow: 0 4px 24px rgba(0,0,0,0.6);
+    --hex-offset: #586e75; --hex-byte: #93a1a1; --hex-ascii: #859900;
+    --hex-highlight: rgba(42,161,152,0.08);
   }
   [data-theme="light"] {
-    --bg-0: #f4f5f8; --bg-1: #ffffff; --bg-2: #eaecf1; --bg-3: #dde0e8;
-    --bg-4: #cfd3dc; --bg-5: #bec4d0;
-    --border: #d0d4dc; --border-b: #c0c6d0;
-    --t0: #1a1e28; --t1: #3a4050; --t2: #6a7488; --t3: #98a0b0;
-    --green: #18a85c; --red: #d03030; --amber: #c08010;
-    --cyan: #1098b0; --blue: #3060d0; --purple: #7050c0; --pink: #c04080;
-    --term-bg: #1a1e28; --term-text: #c8d4e0;
-    --glow-g: 0 0 4px rgba(24,168,92,0.2);
-    --glow-r: 0 0 4px rgba(208,48,48,0.2);
-    --shadow: 0 2px 8px rgba(0,0,0,0.12);
-    --logo-filter: brightness(0.7);
+    --base03: #002b36; --base02: #073642; --base01: #586e75;
+    --base00: #657b83; --base0: #839496; --base1: #93a1a1;
+    --base2: #eee8d5; --base3: #fdf6e3;
+    --yellow: #b58900; --orange: #cb4b16; --red: #dc322f;
+    --magenta: #d33682; --violet: #6c71c4; --blue: #268bd2;
+    --cyan: #2aa198; --green: #859900;
+
+    --bg-0: #fdf6e3; --bg-1: #eee8d5; --bg-2: #e6dfca; --bg-3: #ddd6c1;
+    --border: #d0c8b0; --border-b: #c0b898;
+    --t0: #002b36; --t1: #073642; --t2: #586e75; --t3: #93a1a1;
+    --term-bg: #002b36; --term-text: #93a1a1;
+    --shadow: 0 4px 16px rgba(0,0,0,0.15);
+    --hex-offset: #586e75; --hex-byte: #073642; --hex-ascii: #859900;
+    --hex-highlight: rgba(42,161,152,0.06);
   }
 
   * { margin:0; padding:0; box-sizing:border-box; }
-
   html, body {
     height:100%; background:var(--bg-0); color:var(--t0);
-    font-family:'IBM Plex Sans','JetBrains Mono',system-ui,sans-serif;
+    font-family:'Source Sans 3',system-ui,sans-serif;
     font-size:14px; overflow:hidden;
   }
-
-  code, .mono, .vty-screen, .vty-input, .pkt-table, #cap-filter {
-    font-family:'JetBrains Mono',monospace;
+  code, .mono, .vty-screen, .vty-input, .pkt-table, #cap-filter, .hex-dump {
+    font-family:'Fira Code',monospace;
   }
 
-  /* ═══ Layout de base ═══ */
-  #app {
-    display: grid;
-    grid-template-rows: 44px 1fr 1fr;
-    grid-template-columns: 280px 1fr;
-    height: 100vh;
-  }
+  /* ═══ Layout ═══ */
+  #app { display:flex; flex-direction:column; height:100vh; }
 
-  /* ═══ Header responsive ═══ */
+  /* ═══ Header ═══ */
   header {
-    grid-column: 1 / -1;
-    background: var(--bg-1);
-    border-bottom: 1px solid var(--border);
-    display: flex; align-items: center;
-    padding: 0 18px; gap: 14px;
-    flex-wrap: wrap;
+    background:var(--bg-1); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; padding:0 16px; gap:12px;
+    height:48px; flex-shrink:0;
   }
-  
-  .logo { 
-    font-family:'JetBrains Mono',monospace; 
-    font-weight:700; 
-    font-size:15px; 
-    color:var(--green); 
-    letter-spacing:.04em; 
-    filter:var(--logo-filter);
-    white-space: nowrap;
+  .logo {
+    font-family:'Fira Code',monospace; font-weight:700; font-size:16px;
+    color:var(--green); letter-spacing:.06em;
   }
-  
-  .sep { 
-    width:1px; 
-    height:20px; 
-    background:var(--border-b); 
+  .sep { width:1px; height:22px; background:var(--border-b); flex-shrink:0; }
+  .htag {
+    font-size:11px; padding:3px 10px; border-radius:4px;
+    background:var(--bg-2); color:var(--t2); white-space:nowrap;
+    font-family:'Fira Code',monospace;
   }
-  
-  .htag { 
-    font-size:12px; 
-    padding:3px 10px; 
-    border-radius:4px; 
-    background:var(--bg-3); 
-    color:var(--t2);
-    white-space: nowrap;
-  }
-  
-  .htag.on { 
-    background:rgba(34,214,122,0.1); 
-    color:var(--green); 
-  }
-  
-  .hright { 
-    margin-left:auto; 
-    display:flex; 
-    align-items:center; 
-    gap:10px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
+  .htag.on { background:rgba(133,153,0,0.15); color:var(--green); }
+  .hright { margin-left:auto; display:flex; align-items:center; gap:8px; }
   .btn {
-    background:var(--bg-3); border:1px solid var(--border-b); color:var(--t1);
-    font-family:'IBM Plex Sans',sans-serif; font-size:12px; font-weight:500;
+    background:var(--bg-2); border:1px solid var(--border-b); color:var(--t1);
+    font-family:'Source Sans 3',sans-serif; font-size:12px; font-weight:600;
     padding:5px 14px; cursor:pointer; border-radius:4px; transition:all .12s;
-    white-space: nowrap;
+    white-space:nowrap;
   }
-  
-  .btn:hover { background:var(--bg-4); color:var(--t0); }
-  .btn.primary { border-color:rgba(34,214,122,0.3); }
-  .btn.primary:hover { background:rgba(34,214,122,0.12); color:var(--green); }
-  .btn.danger:hover { background:rgba(240,85,85,0.12); color:var(--red); }
-
+  .btn:hover { background:var(--bg-3); color:var(--t0); }
+  .btn.primary { border-color:rgba(133,153,0,0.4); }
+  .btn.primary:hover { background:rgba(133,153,0,0.15); color:var(--green); }
+  .btn.danger:hover { background:rgba(220,50,47,0.15); color:var(--red); }
+  .btn.vty-btn { border-color:rgba(42,161,152,0.4); }
+  .btn.vty-btn:hover { background:rgba(42,161,152,0.15); color:var(--cyan); }
+  .btn.audio-btn { border-color:rgba(181,137,0,0.4); }
+  .btn.audio-btn:hover { background:rgba(181,137,0,0.15); color:var(--yellow); }
+  .btn.audio-btn.active { background:rgba(181,137,0,0.2); color:var(--yellow); border-color:var(--yellow); }
   .theme-btn {
-    background:var(--bg-3); border:1px solid var(--border-b); color:var(--t2);
+    background:var(--bg-2); border:1px solid var(--border-b); color:var(--t2);
     width:34px; height:34px; border-radius:50%; cursor:pointer;
     display:flex; align-items:center; justify-content:center; font-size:16px;
     transition:all .2s;
   }
-  .theme-btn:hover { background:var(--bg-4); color:var(--t0); }
+  .theme-btn:hover { background:var(--bg-3); color:var(--t0); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; vertical-align:middle; margin-right:5px; }
+  .dot.on { background:var(--green); box-shadow:0 0 6px rgba(133,153,0,0.4); }
+  .dot.off { background:var(--red); box-shadow:0 0 6px rgba(220,50,47,0.3); }
 
-  .dot { 
-    display:inline-block; 
-    width:8px; 
-    height:8px; 
-    border-radius:50%; 
-    vertical-align:middle; 
-    margin-right:6px; 
-  }
-  
-  .dot.on { 
-    background:var(--green); 
-    box-shadow:var(--glow-g); 
-  }
-  
-  .dot.off { 
-    background:var(--red); 
-    box-shadow:var(--glow-r); 
+  /* ═══ Main ═══ */
+  #main {
+    flex:1; display:grid;
+    grid-template-columns:240px 1fr;
+    grid-template-rows:1fr;
+    min-height:0; overflow:hidden;
   }
 
   /* ═══ Panels ═══ */
-  .panel { 
-    background:var(--bg-1); 
-    display:flex; 
-    flex-direction:column; 
-    overflow:hidden; 
+  .panel { background:var(--bg-1); display:flex; flex-direction:column; overflow:hidden; min-height:0; }
+  .ph {
+    display:flex; align-items:center; padding:8px 12px; background:var(--bg-2);
+    border-bottom:1px solid var(--border); gap:8px; flex-shrink:0;
   }
-  
-  .ph { 
-    display:flex; 
-    align-items:center; 
-    padding:8px 14px; 
-    background:var(--bg-2); 
-    border-bottom:1px solid var(--border); 
-    gap:8px; 
-    flex-shrink:0; 
+  .ph h2 {
+    font-size:11px; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--t3);
+    font-family:'Fira Code',monospace;
   }
-  
-  .ph h2 { 
-    font-size:12px; 
-    font-weight:600; 
-    letter-spacing:.06em; 
-    text-transform:uppercase; 
-    color:var(--t2); 
+  .ph .badge {
+    font-size:10px; padding:2px 8px; border-radius:10px;
+    background:var(--bg-3); color:var(--t2); margin-left:auto;
+    font-family:'Fira Code',monospace;
   }
-  
-  .ph .badge { 
-    font-size:11px; 
-    padding:2px 8px; 
-    border-radius:10px; 
-    background:var(--bg-4); 
-    color:var(--t2); 
-    margin-left:auto; 
-  }
-  
-  .ph .badge.live { 
-    background:rgba(34,214,122,0.1); 
-    color:var(--green); 
-  }
-
-  .pb { 
-    flex:1; 
-    overflow-y:auto; 
-    padding:8px; 
-  }
-  
+  .ph .badge.live { background:rgba(133,153,0,0.15); color:var(--green); }
+  .pb { flex:1; overflow-y:auto; padding:6px; min-height:0; }
   .pb::-webkit-scrollbar { width:6px; }
   .pb::-webkit-scrollbar-track { background:var(--bg-1); }
-  .pb::-webkit-scrollbar-thumb { background:var(--bg-4); border-radius:3px; }
+  .pb::-webkit-scrollbar-thumb { background:var(--bg-3); border-radius:3px; }
 
   /* ═══ Left: Operators ═══ */
-  #op-panel { 
-    grid-row:2/4; 
-    grid-column:1; 
-    border-right:1px solid var(--border); 
+  #op-panel { grid-row:1; grid-column:1; border-right:1px solid var(--border); }
+  .op-card { margin:4px 0; background:var(--bg-2); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+  .op-card.on { border-left:3px solid var(--green); }
+  .op-card.off { border-left:3px solid var(--t3); opacity:.4; }
+  .op-head { padding:10px 12px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .op-head .id { font-family:'Fira Code',monospace; font-weight:700; color:var(--cyan); font-size:14px; }
+  .op-head .ms { font-size:11px; color:var(--t2); margin-left:auto; font-family:'Fira Code',monospace; }
+  .op-head .sms-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-left:4px; }
+  .op-head .sms-dot.up { background:var(--green); }
+  .op-head .sms-dot.down { background:var(--red); }
+  .op-detail { display:none; padding:6px 12px 10px; font-size:12px; color:var(--t2); border-top:1px solid var(--border); }
+  .op-card.expanded .op-detail { display:block; }
+  .op-row { display:flex; justify-content:space-between; padding:2px 0; }
+  .op-row .v { color:var(--t1); font-family:'Fira Code',monospace; font-size:11px; }
+  .ms-chip {
+    display:inline-block; font-family:'Fira Code',monospace;
+    font-size:10px; padding:2px 6px; margin:2px; border-radius:3px;
+    background:var(--bg-3); color:var(--yellow);
   }
 
-  .op-card { 
-    margin:4px 0; 
-    background:var(--bg-2); 
-    border:1px solid var(--border); 
-    border-radius:5px; 
-    overflow:hidden; 
+  /* ═══ Capture area ═══ */
+  #capture-area { grid-row:1; grid-column:2; display:flex; flex-direction:column; overflow:hidden; }
+  #cap-toolbar {
+    display:flex; align-items:center; padding:6px 10px; gap:8px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); flex-shrink:0;
   }
-  
-  .op-card.on { 
-    border-left:3px solid var(--green); 
-  }
-  
-  .op-card.off { 
-    border-left:3px solid var(--t3); 
-    opacity:.45; 
-  }
-  
-  .op-head { 
-    padding:10px 12px; 
-    cursor:pointer; 
-    display:flex; 
-    align-items:center; 
-    gap:8px; 
-  }
-  
-  .op-head .id { 
-    font-family:'JetBrains Mono',monospace; 
-    font-weight:700; 
-    color:var(--cyan); 
-    font-size:14px; 
-  }
-  
-  .op-head .ms { 
-    font-size:12px; 
-    color:var(--t2); 
-    margin-left:auto; 
-  }
-  
-  .op-detail { 
-    display:none; 
-    padding:6px 12px 10px; 
-    font-size:12px; 
-    color:var(--t2); 
-    border-top:1px solid var(--border); 
-  }
-  
-  .op-card.expanded .op-detail { 
-    display:block; 
-  }
-  
-  .op-row { 
-    display:flex; 
-    justify-content:space-between; 
-    padding:3px 0; 
-  }
-  
-  .op-row .v { 
-    color:var(--t1); 
-    font-family:'JetBrains Mono',monospace; 
-    font-size:12px; 
-  }
-  
-  .ms-chip { 
-    display:inline-block; 
-    font-family:'JetBrains Mono',monospace; 
-    font-size:11px; 
-    padding:2px 6px; 
-    margin:2px; 
-    border-radius:3px; 
-    background:var(--bg-4); 
-    color:var(--amber); 
-  }
-
-  /* ═══ Top-right: Capture ═══ */
-  #capture-area { 
-    grid-row:2; 
-    grid-column:2; 
-    display:flex; 
-    flex-direction:column; 
-    overflow:hidden; 
-    border-bottom:1px solid var(--border); 
-  }
-  
-  #cap-toolbar { 
-    display:flex; 
-    align-items:center; 
-    padding:6px 10px; 
-    gap:8px; 
-    background:var(--bg-2); 
-    border-bottom:1px solid var(--border); 
-    flex-shrink:0; 
-    flex-wrap: wrap;
-  }
-  
   #cap-filter {
-    flex: 1 1 200px;
-    background:var(--bg-3); 
-    border:1px solid var(--border-b); 
-    color:var(--t0);
-    font-size:13px; 
-    padding:5px 10px; 
-    outline:none; 
-    border-radius:4px;
-    min-width: 150px;
+    flex:1; min-width:120px;
+    background:var(--bg-1); border:1px solid var(--border-b); color:var(--t0);
+    font-size:12px; padding:6px 10px; outline:none; border-radius:4px;
   }
-  
-  #cap-filter:focus { 
-    border-color:var(--cyan); 
-  }
-  
-  #cap-filter::placeholder { 
-    color:var(--t3); 
-  }
+  #cap-filter:focus { border-color:var(--cyan); }
+  #cap-filter::placeholder { color:var(--t3); }
 
-  #pkt-list-wrap { 
-    flex:1; 
-    overflow-y:auto; 
-    min-height:0; 
-  }
-  
-  .pkt-table { 
-    width:100%; 
-    border-collapse:collapse; 
-    font-size:12px; 
-  }
-  
-  .pkt-table thead { 
-    position:sticky; 
-    top:0; 
-    z-index:1; 
-  }
-  
+  #pkt-list-wrap { flex:1; overflow-y:auto; min-height:0; }
+  .pkt-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .pkt-table thead { position:sticky; top:0; z-index:1; }
   .pkt-table th {
-    background:var(--bg-2); 
-    color:var(--t3); 
-    font-weight:600; 
-    text-align:left;
-    padding:5px 8px; 
-    font-size:10px; 
-    letter-spacing:.06em; 
-    text-transform:uppercase;
-    border-bottom:1px solid var(--border);
+    background:var(--bg-2); color:var(--t3); font-weight:700; text-align:left;
+    padding:5px 8px; font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+    border-bottom:1px solid var(--border); font-family:'Fira Code',monospace;
   }
-  
-  .pkt-table td { 
-    padding:4px 8px; 
-    border-bottom:1px solid var(--bg-2); 
-    white-space:nowrap; 
-    overflow:hidden; 
-    text-overflow:ellipsis; 
-    cursor:pointer; 
+  .pkt-table td {
+    padding:4px 8px; border-bottom:1px solid var(--bg-2);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer;
   }
-  
-  .pkt-table tr:hover { 
-    background:var(--bg-3); 
-  }
-  
-  .pkt-table tr.selected { 
-    background:rgba(40,200,224,0.07); 
-  }
-  
-  .pkt-table tr.flash { 
-    animation: pktFlash .4s; 
-  }
-  
-  @keyframes pktFlash { 
-    0%{background:rgba(34,214,122,0.08)} 
-    100%{background:transparent} 
-  }
+  .pkt-table tr:hover { background:var(--bg-2); }
+  .pkt-table tr.selected { background:rgba(42,161,152,0.1); }
+  .pkt-table tr.flash { animation: pktFlash .4s; }
+  @keyframes pktFlash { 0%{background:rgba(133,153,0,0.1)} 100%{background:transparent} }
 
-  .proto { 
-    display:inline-block; 
-    padding:1px 6px; 
-    border-radius:3px; 
-    font-size:11px; 
-    font-weight:500; 
-  }
-  
-  .proto-rr   { background:rgba(40,200,224,0.1); color:var(--cyan); }
-  .proto-mm   { background:rgba(160,112,255,0.1); color:var(--purple); }
-  .proto-cc   { background:rgba(240,96,160,0.1); color:var(--pink); }
-  .proto-sms  { background:rgba(34,214,122,0.1); color:var(--green); }
-  .proto-dtap { background:rgba(72,136,255,0.1); color:var(--blue); }
-  .proto-def  { background:var(--bg-4); color:var(--t1); }
-  
-  .dir-ul { color:var(--red); font-weight:600; font-size:11px; }
-  .dir-dl { color:var(--green); font-weight:600; font-size:11px; }
+  .proto { display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px; font-weight:600; font-family:'Fira Code',monospace; }
+  .proto-gsmtap { background:rgba(42,161,152,0.12); color:var(--cyan); }
+  .proto-sctp   { background:rgba(108,113,196,0.12); color:var(--violet); }
+  .proto-rr     { background:rgba(42,161,152,0.12); color:var(--cyan); }
+  .proto-mm     { background:rgba(108,113,196,0.12); color:var(--violet); }
+  .proto-cc     { background:rgba(211,54,130,0.12); color:var(--magenta); }
+  .proto-sms    { background:rgba(133,153,0,0.12); color:var(--green); }
+  .proto-dtap   { background:rgba(38,139,210,0.12); color:var(--blue); }
+  .proto-m3ua   { background:rgba(203,75,22,0.12); color:var(--orange); }
+  .proto-def    { background:var(--bg-3); color:var(--t1); }
 
-  /* Packet detail panel */
+  /* ═══ Packet detail ═══ */
   #pkt-detail-wrap {
-    height:180px; 
-    min-height:60px; 
-    max-height:50%;
-    border-top:2px solid var(--border-b); 
-    background:var(--bg-1);
-    overflow-y:auto; 
-    flex-shrink:0; 
-    resize:vertical;
+    height:220px; min-height:80px; max-height:60%;
+    border-top:2px solid var(--border-b); background:var(--bg-1);
+    flex-shrink:0; resize:vertical; display:flex; flex-direction:column; overflow:hidden;
   }
-  
-  #pkt-detail-wrap .ph { 
-    position:sticky; 
-    top:0; 
-    z-index:1; 
+  #detail-tabs {
+    display:flex; gap:0; background:var(--bg-2); border-bottom:1px solid var(--border); flex-shrink:0;
   }
-  
-  #pkt-detail { 
-    padding:6px 10px; 
-    font-family:'JetBrains Mono',monospace; 
-    font-size:12px; 
-    line-height:1.7; 
+  #detail-tabs button {
+    background:none; border:none; border-bottom:2px solid transparent;
+    color:var(--t3); font-size:11px; font-weight:700; padding:7px 16px;
+    cursor:pointer; font-family:'Source Sans 3',sans-serif;
+    text-transform:uppercase; letter-spacing:.05em;
   }
-  
-  .layer-group { 
-    margin:2px 0; 
-  }
-  
-  .layer-name { 
-    cursor:pointer; 
-    font-weight:600; 
-    color:var(--cyan); 
-    padding:3px 6px; 
-    border-radius:3px; 
-    display:flex; 
-    align-items:center; 
-    gap:6px; 
-  }
-  
-  .layer-name:hover { 
-    background:var(--bg-3); 
-  }
-  
-  .layer-name .arrow { 
-    font-size:9px; 
-    color:var(--t3); 
-    transition:transform .15s; 
-    display:inline-block; 
-  }
-  
-  .layer-name .arrow.open { 
-    transform:rotate(90deg); 
-  }
-  
-  .layer-fields { 
-    padding-left:18px; 
-    display:none; 
-  }
-  
-  .layer-fields.open { 
-    display:block; 
-  }
-  
-  .field-row { 
-    color:var(--t2); 
-    padding:1px 6px; 
-    border-radius:2px; 
-  }
-  
-  .field-row:hover { 
-    background:var(--bg-2); 
-  }
-  
-  .field-key { 
-    color:var(--t1); 
-  }
-  
-  .field-val { 
-    color:var(--amber); 
-    margin-left:6px; 
-  }
+  #detail-tabs button.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+  #detail-tabs button:hover { color:var(--t1); }
+  #detail-content { flex:1; overflow-y:auto; min-height:0; }
 
-  /* ═══ Bottom: Two VTY consoles ═══ */
-  #vty-area {
-    grid-row:3; 
-    grid-column:2;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1px;
-    background: var(--border);
+  #pkt-detail {
+    padding:8px 10px; font-family:'Fira Code',monospace; font-size:11px; line-height:1.8;
   }
+  .layer-group { margin:2px 0; }
+  .layer-name {
+    cursor:pointer; font-weight:700; color:var(--cyan);
+    padding:3px 6px; border-radius:3px; display:flex; align-items:center; gap:6px;
+  }
+  .layer-name:hover { background:var(--bg-2); }
+  .layer-name .arrow { font-size:9px; color:var(--t3); transition:transform .15s; display:inline-block; }
+  .layer-name .arrow.open { transform:rotate(90deg); }
+  .layer-fields { padding-left:18px; display:none; }
+  .layer-fields.open { display:block; }
+  .field-row { color:var(--t2); padding:1px 6px; border-radius:2px; }
+  .field-row:hover { background:var(--bg-2); }
+  .field-key { color:var(--t1); }
+  .field-val { color:var(--yellow); margin-left:6px; }
 
-  .vty-box { 
-    background:var(--bg-1); 
-    display:flex; 
-    flex-direction:column; 
-    overflow:hidden; 
+  .hex-dump {
+    padding:10px 12px; font-size:11px; line-height:1.7;
+    color:var(--hex-byte); white-space:pre; overflow-x:auto;
   }
+  .hex-line { display:flex; gap:0; }
+  .hex-line:hover { background:var(--hex-highlight); }
+  .hex-offset { color:var(--hex-offset); min-width:60px; user-select:none; }
+  .hex-bytes { min-width:380px; letter-spacing:.5px; }
+  .hex-bytes .b:hover { background:rgba(42,161,152,0.15); border-radius:2px; }
+  .hex-ascii { color:var(--hex-ascii); margin-left:12px; }
+  .hex-ascii .np { color:var(--t3); }
 
-  .vty-toolbar { 
-    display:flex; 
-    align-items:center; 
-    padding:6px 10px; 
-    gap:6px; 
-    background:var(--bg-2); 
-    border-bottom:1px solid var(--border); 
-    flex-shrink:0; 
-    flex-wrap:wrap; 
+  /* ═══ Floating VTY Windows ═══ */
+  .vty-popup {
+    position:fixed; z-index:200;
+    width:660px; height:400px; min-width:400px; min-height:250px;
+    background:var(--bg-1); border:1px solid var(--border-b);
+    border-radius:8px; box-shadow:var(--shadow);
+    display:flex; flex-direction:column; overflow:hidden;
+    resize:both;
   }
-  
-  .vty-toolbar select {
-    background:var(--bg-3); 
-    border:1px solid var(--border-b); 
-    color:var(--t0);
-    font-family:'JetBrains Mono',monospace; 
-    font-size:12px; 
-    padding:4px 6px; 
-    outline:none; 
-    border-radius:3px;
-    min-width: 70px;
+  .vty-popup-header {
+    display:flex; align-items:center; padding:6px 10px; gap:6px;
+    background:var(--bg-2); border-bottom:1px solid var(--border);
+    cursor:move; flex-shrink:0; user-select:none;
   }
-  
-  .vty-toolbar .label { 
-    font-size:11px; 
-    color:var(--t2); 
-    font-weight:600; 
-    text-transform:uppercase; 
-    letter-spacing:.05em; 
+  .vty-popup-header .title {
+    font-family:'Fira Code',monospace; font-size:12px; font-weight:700;
+    color:var(--cyan); flex:1;
   }
-
+  .vty-popup-header select {
+    background:var(--bg-3); border:1px solid var(--border-b); color:var(--t0);
+    font-family:'Fira Code',monospace; font-size:11px; padding:3px 6px;
+    outline:none; border-radius:3px;
+  }
+  .vty-popup-header .close-btn {
+    background:none; border:none; color:var(--red); font-size:16px;
+    cursor:pointer; padding:2px 6px; border-radius:3px;
+  }
+  .vty-popup-header .close-btn:hover { background:rgba(220,50,47,0.15); }
   .vty-screen {
-    flex:1; 
-    overflow-y:auto; 
-    padding:8px 10px;
-    font-family:'JetBrains Mono',monospace; 
-    font-size:13px; 
-    line-height:1.6;
-    background:var(--term-bg); 
-    color:var(--term-text);
-    white-space:pre-wrap; 
-    word-break:break-all;
+    flex:1; overflow-y:auto; padding:8px 10px;
+    font-family:'Fira Code',monospace; font-size:13px; line-height:1.6;
+    background:var(--term-bg); color:var(--term-text);
+    white-space:pre-wrap; word-break:break-all; min-height:0;
   }
-  
-  .vty-screen .prompt { color:var(--green); }
   .vty-screen .err { color:var(--red); }
   .vty-screen .sys { color:var(--cyan); font-style:italic; }
-  .vty-screen .cmd { color:var(--amber); }
-
-  .vty-input-row { 
-    display:flex; 
-    border-top:1px solid var(--border); 
-    flex-shrink:0; 
-    background:var(--bg-2); 
+  .vty-screen .cmd { color:var(--yellow); }
+  .vty-input-row {
+    display:flex; border-top:1px solid var(--border); flex-shrink:0; background:var(--bg-2);
   }
-  
-  .vty-input-row .prm { 
-    padding:7px 10px; 
-    color:var(--green); 
-    font-family:'JetBrains Mono',monospace; 
-    font-weight:600; 
-    font-size:13px; 
-    white-space:nowrap; 
+  .vty-input-row .prm {
+    padding:7px 10px; color:var(--green); font-family:'Fira Code',monospace;
+    font-weight:700; font-size:13px; white-space:nowrap;
   }
-  
   .vty-input-row input {
-    flex:1; 
-    background:transparent; 
-    border:none; 
-    color:var(--t0);
-    font-family:'JetBrains Mono',monospace; 
-    font-size:13px; 
-    padding:7px 0; 
-    outline:none;
-    min-width: 50px;
+    flex:1; background:transparent; border:none; color:var(--t0);
+    font-family:'Fira Code',monospace; font-size:13px; padding:7px 0; outline:none;
   }
 
-  .vty-empty { 
-    display:flex; 
-    align-items:center; 
-    justify-content:center; 
-    flex:1; 
-    color:var(--t3); 
-    font-size:13px; 
-    text-align:center; 
-    padding:20px; 
-    background:var(--term-bg); 
+  /* ═══ Responsive ═══ */
+  @media (max-width:900px) {
+    #main { grid-template-columns:1fr; }
+    #op-panel { display:none; }
+    .vty-popup { width:90vw; left:5vw !important; }
   }
-
-  /* ═══ MEDIA QUERIES - Responsive Design ═══ */
-  
-  /* Tablettes et petits écrans */
-  @media screen and (max-width: 1024px) {
-    #app {
-      grid-template-columns: 220px 1fr;
-    }
-    
-    .pkt-table th:nth-child(5),
-    .pkt-table td:nth-child(5),
-    .pkt-table th:nth-child(6),
-    .pkt-table td:nth-child(6) {
-      display: none; /* Cache TS et FN sur tablettes */
-    }
-    
-    .hright {
-      gap: 5px;
-    }
-    
-    .btn {
-      padding: 5px 8px;
-      font-size: 11px;
-    }
-  }
-
-  /* Mobiles en mode paysage et petits tablettes */
-  @media screen and (max-width: 768px) {
-    #app {
-      grid-template-rows: auto 1fr 1fr;
-      grid-template-columns: 1fr;
-    }
-    
-    header {
-      padding: 8px 12px;
-      gap: 8px;
-    }
-    
-    .logo {
-      font-size: 14px;
-    }
-    
-    .htag {
-      font-size: 11px;
-      padding: 2px 6px;
-    }
-    
-    .hright {
-      width: 100%;
-      margin-left: 0;
-      justify-content: flex-start;
-      order: 3;
-    }
-    
-    #op-panel {
-      grid-row: 2;
-      grid-column: 1;
-      max-height: 30vh;
-    }
-    
-    #capture-area {
-      grid-row: 3;
-      grid-column: 1;
-    }
-    
-    #vty-area {
-      grid-row: 4;
-      grid-column: 1;
-      grid-template-columns: 1fr;
-    }
-    
-    .pkt-table th:nth-child(4),
-    .pkt-table td:nth-child(4) {
-      display: none; /* Cache ARFCN sur mobile */
-    }
-    
-    #cap-toolbar {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    
-    #cap-filter {
-      width: 100%;
-    }
-    
-    .vty-toolbar {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    
-    .vty-toolbar select {
-      width: 100%;
-    }
-  }
-
-  /* Petits mobiles */
-  @media screen and (max-width: 480px) {
-    header {
-      padding: 5px 8px;
-    }
-    
-    .logo {
-      font-size: 12px;
-    }
-    
-    .htag {
-      font-size: 10px;
-      padding: 2px 4px;
-    }
-    
-    .btn {
-      padding: 4px 6px;
-      font-size: 10px;
-    }
-    
-    .theme-btn {
-      width: 28px;
-      height: 28px;
-      font-size: 14px;
-    }
-    
-    .pkt-table th,
-    .pkt-table td {
-      padding: 3px 4px;
-      font-size: 10px;
-    }
-    
-    .pkt-table th:nth-child(3),
-    .pkt-table td:nth-child(3) {
-      display: none; /* Cache DIR sur très petits écrans */
-    }
-    
-    .pkt-table th:nth-child(1) {
-      width: 30px;
-    }
-    
-    .proto {
-      padding: 1px 3px;
-      font-size: 9px;
-    }
-    
-    .vty-toolbar .label {
-      font-size: 10px;
-    }
-    
-    .vty-screen {
-      font-size: 11px;
-      padding: 5px;
-    }
-    
-    .vty-input-row .prm {
-      font-size: 11px;
-      padding: 5px 8px;
-    }
-    
-    .vty-input-row input {
-      font-size: 11px;
-      padding: 5px 0;
-    }
-  }
-
-  /* Support pour très grands écrans */
-  @media screen and (min-width: 1600px) {
-    html, body {
-      font-size: 16px;
-    }
-    
-    #app {
-      grid-template-columns: 350px 1fr;
-    }
-    
-    .pkt-table {
-      font-size: 14px;
-    }
-    
-    .pkt-table th {
-      font-size: 12px;
-    }
-  }
-
-  /* Mode impression */
-  @media print {
-    #app {
-      display: block;
-      height: auto;
-      overflow: visible;
-    }
-    
-    header, .btn, .vty-input-row, #pkt-detail-wrap {
-      display: none;
-    }
-    
-    .pkt-table {
-      page-break-inside: avoid;
-    }
+  @media (min-width:1800px) {
+    #main { grid-template-columns:300px 1fr; }
+    .pkt-table { font-size:13px; }
   }
 </style>
 </head>
@@ -783,101 +310,64 @@
     <span class="htag" id="tag-ops">0 ops</span>
     <span class="htag" id="tag-tshark">tshark off</span>
     <div class="hright">
-      <button class="btn primary" onclick="send({type:'tshark_start'})">▶ Capture</button>
-      <button class="btn danger" onclick="send({type:'tshark_stop'})">■ Stop</button>
-      <button class="btn" onclick="send({type:'poll'})">⟳ Poll</button>
+      <button class="btn primary" onclick="send({type:'tshark_start'})" title="Start capture">▶ Capture</button>
+      <button class="btn danger" onclick="send({type:'tshark_stop'})" title="Stop capture">■ Stop</button>
+      <button class="btn" onclick="send({type:'poll'})">⟳ Refresh</button>
       <button class="btn" onclick="clearPackets()">Clear</button>
-      <span class="sep"></span>
-      <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle" title="Toggle theme">◐</button>
-      <span style="font-size:12px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
+      <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
+      <button class="btn audio-btn" id="audio-btn" onclick="toggleAudio()">🔇 Audio</button>
+      <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
+      <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
     </div>
   </header>
 
-  <!-- Left: Operators -->
-  <div class="panel" id="op-panel">
-    <div class="ph"><h2>Operators</h2><span class="badge" id="op-count">0</span></div>
-    <div class="pb" id="op-list"></div>
-  </div>
-
-  <!-- Top-right: Capture -->
-  <div id="capture-area">
-    <div id="cap-toolbar">
-      <input type="text" id="cap-filter" placeholder="Filter: rr, mm, cc, sms, arfcn=N, ul, dl …" spellcheck="false">
-      <span style="font-size:12px;color:var(--t3);white-space:nowrap" id="pkt-counter">0 packets</span>
-    </div>
-    <div id="pkt-list-wrap">
-      <table class="pkt-table">
-        <thead><tr>
-          <th style="width:50px">#</th>
-          <th style="width:85px">TIME</th>
-          <th style="width:35px">DIR</th>
-          <th style="width:55px">ARFCN</th>
-          <th style="width:35px">TS</th>
-          <th style="width:75px">FN</th>
-          <th style="width:90px">PROTO</th>
-          <th>INFO</th>
-        </tr></thead>
-        <tbody id="pkt-tbody"></tbody>
-      </table>
-    </div>
-    <div id="pkt-detail-wrap">
-      <div class="ph"><h2>Packet Detail</h2><span class="badge" id="detail-badge">—</span></div>
-      <div id="pkt-detail"><span style="color:var(--t3)">Click a packet to inspect layers</span></div>
-    </div>
-  </div>
-
-  <!-- Bottom: Two VTY Consoles -->
-  <div id="vty-area">
-    <!-- VTY 1 -->
-    <div class="vty-box" id="vty-box-0">
-      <div class="vty-toolbar">
-        <span class="label">VTY 1</span>
-        <select class="vty-op" data-idx="0"><option value="">OP…</option></select>
-        <select class="vty-comp" data-idx="0">
-          <option value="bsc">BSC</option><option value="msc">MSC</option><option value="hlr">HLR</option>
-          <option value="bts">BTS</option><option value="mgw">MGW</option><option value="stp">STP</option>
-          <option value="sgsn">SGSN</option><option value="ggsn">GGSN</option><option value="pcu">PCU</option>
-          <option value="baseband">Baseband</option>
-        </select>
-        <button class="btn primary" onclick="vtyConnect(0)">Connect</button>
-        <button class="btn" onclick="vtyClose(0)">Close</button>
-      </div>
-      <div class="vty-screen" id="vty-screen-0"></div>
-      <div class="vty-empty" id="vty-empty-0">Select operator + component → Connect</div>
-      <div class="vty-input-row">
-        <span class="prm" id="vty-prm-0">$</span>
-        <input type="text" class="vty-input" data-idx="0" placeholder="VTY command…"
-               onkeydown="vtyKey(event,0)" autocomplete="off" spellcheck="false">
-      </div>
+  <div id="main">
+    <div class="panel" id="op-panel">
+      <div class="ph"><h2>Operators</h2><span class="badge" id="op-count">0</span></div>
+      <div class="pb" id="op-list"></div>
     </div>
 
-    <!-- VTY 2 -->
-    <div class="vty-box" id="vty-box-1">
-      <div class="vty-toolbar">
-        <span class="label">VTY 2</span>
-        <select class="vty-op" data-idx="1"><option value="">OP…</option></select>
-        <select class="vty-comp" data-idx="1">
-          <option value="bsc">BSC</option><option value="msc">MSC</option><option value="hlr">HLR</option>
-          <option value="bts">BTS</option><option value="mgw">MGW</option><option value="stp">STP</option>
-          <option value="sgsn">SGSN</option><option value="ggsn">GGSN</option><option value="pcu">PCU</option>
-          <option value="baseband">Baseband</option>
-        </select>
-        <button class="btn primary" onclick="vtyConnect(1)">Connect</button>
-        <button class="btn" onclick="vtyClose(1)">Close</button>
+    <div id="capture-area">
+      <div id="cap-toolbar">
+        <input type="text" id="cap-filter" placeholder="Filter: gsmtap, sctp, rr, sms, src=172.20… " spellcheck="false">
+        <span style="font-size:11px;color:var(--t3);white-space:nowrap;font-family:'Fira Code',monospace" id="pkt-counter">0 pkts</span>
       </div>
-      <div class="vty-screen" id="vty-screen-1"></div>
-      <div class="vty-empty" id="vty-empty-1">Select operator + component → Connect</div>
-      <div class="vty-input-row">
-        <span class="prm" id="vty-prm-1">$</span>
-        <input type="text" class="vty-input" data-idx="1" placeholder="VTY command…"
-               onkeydown="vtyKey(event,1)" autocomplete="off" spellcheck="false">
+      <div id="pkt-list-wrap">
+        <table class="pkt-table">
+          <thead><tr>
+            <th style="width:40px">#</th>
+            <th style="width:70px">TIME</th>
+            <th style="width:110px">SOURCE</th>
+            <th style="width:110px">DEST</th>
+            <th style="width:80px">PROTO</th>
+            <th style="width:40px">LEN</th>
+            <th>INFO</th>
+          </tr></thead>
+          <tbody id="pkt-tbody"></tbody>
+        </table>
+      </div>
+      <div id="pkt-detail-wrap">
+        <div class="ph"><h2>Packet Detail</h2><span class="badge" id="detail-badge">—</span></div>
+        <div id="detail-tabs">
+          <button class="active" onclick="switchDetailTab('decode')">Decode</button>
+          <button onclick="switchDetailTab('hex')">Hex Dump</button>
+          <button onclick="switchDetailTab('raw')">Raw JSON</button>
+        </div>
+        <div id="detail-content">
+          <div id="pkt-detail"><span style="color:var(--t3)">Click a packet to inspect</span></div>
+          <div id="pkt-hex" style="display:none" class="hex-dump"></div>
+          <div id="pkt-raw" style="display:none" class="hex-dump"></div>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
+<!-- VTY popup container -->
+<div id="vty-layer"></div>
+
 <script>
-// ═══ Theme ═══════════════════════════════════════════════════
+// ═══ Theme ═══
 function toggleTheme() {
   const html = document.documentElement;
   const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -890,55 +380,67 @@ try {
   if (saved) { document.documentElement.dataset.theme = saved; document.getElementById('theme-toggle').textContent = saved === 'dark' ? '◐' : '◑'; }
 } catch {}
 
-// ═══ WebSocket ═══════════════════════════════════════════════
+// ═══ Detail tab switching ═══
+let currentDetailTab = 'decode';
+let currentDetailPacket = null;
+
+function switchDetailTab(tab) {
+  currentDetailTab = tab;
+  document.querySelectorAll('#detail-tabs button').forEach(b => b.classList.remove('active'));
+  document.querySelector(`#detail-tabs button:nth-child(${tab==='decode'?1:tab==='hex'?2:3})`).classList.add('active');
+  document.getElementById('pkt-detail').style.display = tab==='decode'?'block':'none';
+  document.getElementById('pkt-hex').style.display = tab==='hex'?'block':'none';
+  document.getElementById('pkt-raw').style.display = tab==='raw'?'block':'none';
+  if (currentDetailPacket) renderDetailForTab(currentDetailPacket);
+}
+
+// ═══ WebSocket ═══
 const WS_URL = `ws://${location.hostname}:${location.port||80}`;
 let ws = null;
 let opState = {}, activeOpIds = [];
+let reconnectDelay = 1000;
 
 function connectWs() {
   ws = new WebSocket(WS_URL);
-  ws.onopen = () => setWs(true);
-  ws.onmessage = e => handle(JSON.parse(e.data));
-  ws.onclose = () => { setWs(false); setTimeout(connectWs, 2000); };
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { setWs(true); reconnectDelay = 1000; };
+  ws.onmessage = e => {
+    if (e.data instanceof ArrayBuffer) {
+      handleAudioData(e.data);
+      return;
+    }
+    handle(JSON.parse(e.data));
+  };
+  ws.onclose = () => { setWs(false); setTimeout(connectWs, reconnectDelay); reconnectDelay = Math.min(reconnectDelay*1.5, 10000); };
   ws.onerror = () => {};
 }
 function setWs(on) {
   document.getElementById('ws-dot').className = 'dot '+(on?'on':'off');
-  document.getElementById('ws-txt').textContent = on?'LIVE':'—';
+  document.getElementById('ws-txt').textContent = on?'LIVE':'…';
 }
 function send(msg) { if (ws && ws.readyState===1) ws.send(JSON.stringify(msg)); }
 
-// ═══ Message Router ══════════════════════════════════════════
+// ═══ Message Router ═══
 function handle(msg) {
   switch(msg.type) {
     case 'init':
       activeOpIds = msg.data.activeOpIds||[];
       updateOps(msg.data.operators);
       setTsharkTag(msg.data.tsharkActive || false);
-      buildOpSelects();
       break;
     case 'state':
       activeOpIds = msg.data.activeOpIds||activeOpIds;
       updateOps(msg.data.operators);
-      buildOpSelects();
       break;
-    case 'tshark_status':
-      setTsharkTag(msg.data.active);
-      break;
-    case 'packet': 
-      addPacket(msg.data); 
-      break;
-    case 'tshark_stopped': 
-      setTsharkTag(false); 
-      break;
-    case 'tshark_error':
-      setTsharkTag(false);
-      document.getElementById('tag-tshark').textContent = 'tshark ERROR';
-      break;
+    case 'tshark_status': setTsharkTag(msg.data.active); break;
+    case 'packet': addPacket(msg.data); break;
+    case 'tshark_stopped': setTsharkTag(false); break;
+    case 'tshark_error': setTsharkTag(false); document.getElementById('tag-tshark').textContent='tshark ERR'; break;
     case 'vty_connected': vtyOnConnected(msg.data); break;
     case 'vty_data': vtyOnData(msg.data); break;
     case 'vty_error': vtyOnError(msg.data); break;
     case 'vty_disconnected': vtyOnDisc(msg.data); break;
+    case 'audio_started': case 'audio_stopped': case 'audio_error': handleAudioMsg(msg); break;
   }
 }
 
@@ -948,7 +450,7 @@ function setTsharkTag(on) {
   el.className = 'htag' + (on?' on':'');
 }
 
-// ═══ Operators ═══════════════════════════════════════════════
+// ═══ Operators ═══
 function updateOps(ops) {
   opState = ops||{};
   const el = document.getElementById('op-list');
@@ -959,36 +461,42 @@ function updateOps(ops) {
 
   el.innerHTML = ids.map(id => {
     const op = opState[id], bts = op.components?.bts||{}, mc = op.mobiles?.length||0;
+    const smsClass = op.smsRelayUp ? 'up' : 'down';
     return `<div class="op-card on" onclick="this.classList.toggle('expanded')">
       <div class="op-head">
         <span class="id">OP${id}</span>
-        <span style="font-size:12px;color:var(--t2)">${bts.arfcn!=null?'ARFCN '+bts.arfcn:''}</span>
+        <span style="font-size:11px;color:var(--t2)">${bts.band||''}</span>
+        <span class="sms-dot ${smsClass}"></span>
         <span class="ms">${mc} MS</span>
       </div>
       <div class="op-detail">
         <div class="op-row"><span>BSIC</span><span class="v">${bts.bsic??'—'}</span></div>
         <div class="op-row"><span>LAC</span><span class="v">${bts.lac??'—'}</span></div>
         <div class="op-row"><span>CI</span><span class="v">${bts.ci??'—'}</span></div>
-        <div class="op-row"><span>BTS Type</span><span class="v">${bts.type||'—'} ${bts.band||''}</span></div>
+        <div class="op-row"><span>Type</span><span class="v">${bts.type||'—'}</span></div>
         <div class="op-row"><span>TRX</span><span class="v">${bts.trx_count||'—'}</span></div>
-        ${mc>0?'<div style="margin-top:6px">'+op.mobiles.map(m=>`<span class="ms-chip">${m.imsi.slice(0,5)}…${m.imsi.slice(12)}${m.msisdn?' / '+m.msisdn:''}</span>`).join('')+'</div>':''}
+        <div class="op-row"><span>SMS</span><span class="v" style="color:var(--${op.smsRelayUp?'green':'red'})">${op.smsRelayUp?'relay UP':'relay DOWN'}</span></div>
+        ${mc>0?'<div style="margin-top:4px">'+op.mobiles.map(m=>`<span class="ms-chip">${m.imsi.slice(0,5)}…${m.imsi.slice(12)}</span>`).join('')+'</div>':''}
       </div>
     </div>`;
   }).join('');
+
+  // Update VTY popup selects
+  updateVtySelects();
 }
 
-function buildOpSelects() {
+function updateVtySelects() {
   const ids = activeOpIds.length ? activeOpIds : Object.keys(opState).map(Number).sort((a,b)=>a-b);
-  document.querySelectorAll('.vty-op').forEach(sel => {
+  document.querySelectorAll('.vty-op-sel').forEach(sel => {
     const cur = sel.value;
     sel.innerHTML = '<option value="">OP…</option>' + ids.map(i=>`<option value="${i}">OP${i}</option>`).join('');
     if (cur) sel.value = cur;
   });
 }
 
-// ═══ Packet Capture ══════════════════════════════════════════
+// ═══ Packet Capture ═══
 let packets = [];
-const MAX_PKT = 2000;
+const MAX_PKT = 3000;
 let filterText = '';
 
 document.getElementById('cap-filter').addEventListener('input', e => {
@@ -999,41 +507,56 @@ document.getElementById('cap-filter').addEventListener('input', e => {
 function matchFilter(p) {
   if (!filterText) return true;
   const f = filterText;
-  if (f==='ul') return p.uplink;
-  if (f==='dl') return !p.uplink;
-  const am = f.match(/^arfcn\s*=?\s*(\d+)$/);
-  if (am) return String(p.arfcn)===am[1];
-  return `${p.protocol} ${p.info} ${p.arfcn} ${p.channel}`.toLowerCase().includes(f);
+  const sm = f.match(/^src\s*=?\s*(.+)/);
+  if (sm) return (p.src||'').includes(sm[1]);
+  const dm = f.match(/^dst\s*=?\s*(.+)/);
+  if (dm) return (p.dst||'').includes(dm[1]);
+  return `${p.protocol} ${p.info} ${p.src} ${p.dst} ${p.arfcn}`.toLowerCase().includes(f);
 }
 
 function addPacket(p) {
   packets.push(p);
   if (packets.length > MAX_PKT) packets = packets.slice(-MAX_PKT/2);
-  document.getElementById('pkt-counter').textContent = packets.length+' packets';
+  document.getElementById('pkt-counter').textContent = packets.length+' pkts';
   setTsharkTag(true);
   if (!matchFilter(p)) return;
   const tbody = document.getElementById('pkt-tbody');
   tbody.appendChild(makePktRow(p));
-  while (tbody.children.length > 600) tbody.removeChild(tbody.firstChild);
+  while (tbody.children.length > 800) tbody.removeChild(tbody.firstChild);
   const wrap = document.getElementById('pkt-list-wrap');
-  if (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 50) wrap.scrollTop = wrap.scrollHeight;
+  if (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60) wrap.scrollTop = wrap.scrollHeight;
 }
 
 function makePktRow(p) {
   const tr = document.createElement('tr');
-  tr.className = 'flash'; tr.dataset.pid = p.id;
-  tr.onclick = () => { document.querySelectorAll('.pkt-table tr.selected').forEach(r=>r.classList.remove('selected')); tr.classList.add('selected'); renderDetail(p); };
-  const ts = typeof p.ts==='number' ? new Date(p.ts*1000).toLocaleTimeString('en-GB',{hour12:false})+'.'+String(Math.floor((p.ts%1)*1000)).padStart(3,'0') : '—';
+  tr.className = 'flash';
+  tr.onclick = () => {
+    document.querySelectorAll('.pkt-table tr.selected').forEach(r=>r.classList.remove('selected'));
+    tr.classList.add('selected');
+    selectPacket(p);
+  };
+  const ts = typeof p.ts==='number' ? p.ts.toFixed(3) : '—';
   const pc = (p.protocol||'').toLowerCase();
-  const cls = pc.includes('rr')?'proto-rr':pc.includes('mm')?'proto-mm':pc.includes('cc')?'proto-cc':pc.includes('sms')?'proto-sms':pc.includes('dtap')?'proto-dtap':'proto-def';
-  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2)">${ts}</td><td><span class="${p.uplink?'dir-ul':'dir-dl'}">${p.uplink?'UL':'DL'}</span></td><td style="color:var(--cyan)">${p.arfcn||'—'}</td><td style="color:var(--t3)">${p.timeslot||'—'}</td><td style="color:var(--t3)">${p.fn||'—'}</td><td><span class="proto ${cls}">${p.protocol||'—'}</span></td><td style="color:var(--t1);max-width:350px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
+  const cls = pc.includes('sctp')?'proto-sctp':pc.includes('m3ua')?'proto-m3ua':pc.includes('gsmtap')?'proto-gsmtap':pc.includes('rr')?'proto-rr':pc.includes('sms')?'proto-sms':pc.includes('dtap')?'proto-dtap':'proto-def';
+  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2);font-size:11px">${ts}</td><td style="color:var(--cyan);font-size:11px">${esc(p.src||'')}</td><td style="color:var(--violet);font-size:11px">${esc(p.dst||'')}</td><td><span class="proto ${cls}">${esc(p.protocol||'—')}</span></td><td style="color:var(--t3)">${p.length||''}</td><td style="color:var(--t1);max-width:500px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
   return tr;
 }
 
-function renderDetail(p) {
-  const el = document.getElementById('pkt-detail');
+function selectPacket(p) {
+  currentDetailPacket = p;
   document.getElementById('detail-badge').textContent = '#'+p.id+' '+p.protocol;
-  if (!p.layers) { el.innerHTML = '<span style="color:var(--t3)">No decode</span>'; return; }
+  renderDetailForTab(p);
+}
+
+function renderDetailForTab(p) {
+  if (currentDetailTab === 'decode') renderDecode(p);
+  else if (currentDetailTab === 'hex') renderHexDump(p);
+  else renderRawJson(p);
+}
+
+function renderDecode(p) {
+  const el = document.getElementById('pkt-detail');
+  if (!p.layers) { el.innerHTML = '<span style="color:var(--t3)">No decode data (text-only packet)</span>'; return; }
   let h = '';
   for (const [ln, fields] of Object.entries(p.layers)) {
     if (ln.endsWith('_raw')) continue;
@@ -1049,81 +572,153 @@ function renderDetail(p) {
     h += '</div></div>';
   }
   el.innerHTML = h;
+  const first = el.querySelector('.layer-name');
+  if (first) togLayer(first);
 }
 
-function togLayer(el) { const f=el.nextElementSibling; const o=f.classList.toggle('open'); el.querySelector('.arrow').classList.toggle('open',o); }
+function renderHexDump(p) {
+  const el = document.getElementById('pkt-hex');
+  if (!p.hexDump) { el.innerHTML = '<span style="color:var(--t3)">No hex data</span>'; return; }
+  const hex = p.hexDump.replace(/[^0-9a-fA-F]/g,'');
+  const bytes = [];
+  for (let i=0;i<hex.length;i+=2) bytes.push(parseInt(hex.substr(i,2),16));
+  let html='';
+  for (let off=0;off<bytes.length;off+=16) {
+    const row=bytes.slice(off,off+16);
+    const os=off.toString(16).padStart(4,'0');
+    let hp='',ap='';
+    for (let i=0;i<16;i++) {
+      if (i<row.length) { const b=row[i]; hp+=`<span class="b">${b.toString(16).padStart(2,'0')}</span> `; if(i===7)hp+=' '; ap+=(b>=32&&b<=126)?String.fromCharCode(b):'<span class="np">.</span>'; }
+      else { hp+='   '; if(i===7)hp+=' '; ap+=' '; }
+    }
+    html+=`<div class="hex-line"><span class="hex-offset">${os}</span><span class="hex-bytes">${hp}</span><span class="hex-ascii">${ap}</span></div>`;
+  }
+  el.innerHTML=html;
+}
+
+function renderRawJson(p) {
+  const el=document.getElementById('pkt-raw');
+  const c={...p}; delete c.hexDump;
+  el.textContent=JSON.stringify(c,null,2);
+}
+
+function togLayer(el) {
+  const f=el.nextElementSibling;
+  const o=f.classList.toggle('open');
+  el.querySelector('.arrow').classList.toggle('open',o);
+}
 
 function clearPackets() {
-  packets=[]; document.getElementById('pkt-tbody').innerHTML='';
-  document.getElementById('pkt-counter').textContent='0 packets';
-  document.getElementById('pkt-detail').innerHTML='<span style="color:var(--t3)">Click a packet to inspect layers</span>';
+  packets=[];
+  document.getElementById('pkt-tbody').innerHTML='';
+  document.getElementById('pkt-counter').textContent='0 pkts';
+  document.getElementById('pkt-detail').innerHTML='<span style="color:var(--t3)">Click a packet to inspect</span>';
+  document.getElementById('pkt-hex').innerHTML='';
+  document.getElementById('pkt-raw').textContent='';
   document.getElementById('detail-badge').textContent='—';
+  currentDetailPacket=null;
 }
 
 function rebuildPktTable() {
-  const tbody = document.getElementById('pkt-tbody');
+  const tbody=document.getElementById('pkt-tbody');
   tbody.innerHTML='';
-  packets.filter(matchFilter).slice(-600).forEach(p=>tbody.appendChild(makePktRow(p)));
+  packets.filter(matchFilter).slice(-800).forEach(p=>tbody.appendChild(makePktRow(p)));
 }
 
-// ═══ VTY Consoles (0 and 1) ══════════════════════════════════
-const vty = [{key:null,buffer:'',history:[],histIdx:-1}, {key:null,buffer:'',history:[],histIdx:-1}];
+// ═══ VTY Popup Windows ═══
+let vtyCounter = 0;
+const vtyWindows = {};
 
-function vtyConnect(idx) {
-  const opId = document.querySelectorAll('.vty-op')[idx].value;
-  const comp = document.querySelectorAll('.vty-comp')[idx].value;
+function spawnVty() {
+  vtyCounter++;
+  const wid = 'vty-'+vtyCounter;
+  const layer = document.getElementById('vty-layer');
+
+  // Stagger position
+  const offset = (vtyCounter-1) * 30;
+  const top = 80 + (offset % 200);
+  const left = 200 + (offset % 300);
+
+  const div = document.createElement('div');
+  div.className = 'vty-popup';
+  div.id = wid;
+  div.style.top = top+'px';
+  div.style.left = left+'px';
+  div.innerHTML = `
+    <div class="vty-popup-header" onmousedown="startDrag(event,'${wid}')">
+      <span class="title">VTY #${vtyCounter}</span>
+      <select class="vty-op-sel" data-wid="${wid}"><option value="">OP…</option></select>
+      <select class="vty-comp-sel" data-wid="${wid}">
+        <option value="bsc">BSC</option><option value="msc">MSC</option><option value="hlr">HLR</option>
+        <option value="bts">BTS</option><option value="mgw">MGW</option><option value="stp">STP</option>
+        <option value="sgsn">SGSN</option><option value="ggsn">GGSN</option><option value="pcu">PCU</option>
+        <option value="baseband">BB</option>
+      </select>
+      <button class="btn primary" style="padding:3px 10px;font-size:11px" onclick="vtyPopConnect('${wid}')">Go</button>
+      <button class="close-btn" onclick="vtyPopClose('${wid}')">✕</button>
+    </div>
+    <div class="vty-screen" id="${wid}-screen" style="display:none"></div>
+    <div style="display:flex;align-items:center;justify-content:center;flex:1;color:var(--t3);font-size:12px;background:var(--term-bg)" id="${wid}-empty">Select OP + component → Go</div>
+    <div class="vty-input-row">
+      <span class="prm" id="${wid}-prm">$</span>
+      <input type="text" placeholder="VTY command…" onkeydown="vtyPopKey(event,'${wid}')" autocomplete="off" spellcheck="false">
+    </div>`;
+  layer.appendChild(div);
+
+  vtyWindows[wid] = { key:null, buffer:'', history:[], histIdx:-1 };
+  updateVtySelects();
+}
+
+function vtyPopConnect(wid) {
+  const popup = document.getElementById(wid);
+  const opId = popup.querySelector('.vty-op-sel').value;
+  const comp = popup.querySelector('.vty-comp-sel').value;
   if (!opId) return;
   const key = `${opId}-${comp}`;
-  vty[idx].key = key;
-  vty[idx].buffer = '';
+  vtyWindows[wid].key = key;
+  vtyWindows[wid].buffer = '';
   send({ type:'vty_connect', opId:parseInt(opId), component:comp });
 }
 
-function vtyOnConnected(d) {
-  const idx = vty.findIndex(v=>v.key===d.key);
-  if (idx<0) {
-    const free = vty.findIndex(v=>!v.key);
-    if (free>=0) { vty[free].key=d.key; vty[free].buffer=''; showVty(free, d); }
-  } else {
-    showVty(idx, d);
+function vtyPopClose(wid) {
+  const w = vtyWindows[wid];
+  if (w && w.key) send({ type:'vty_disconnect', key:w.key });
+  delete vtyWindows[wid];
+  const el = document.getElementById(wid);
+  if (el) el.remove();
+}
+
+function vtyPopKey(e, wid) {
+  const input = e.target;
+  const w = vtyWindows[wid];
+  if (!w) return;
+  if (e.key==='Enter') {
+    const cmd = input.value;
+    if (!w.key) return;
+    w.buffer += `\x1b[cmd]${cmd}\x1b[/]\r\n`;
+    w.history.push(cmd); w.histIdx = w.history.length;
+    send({ type:'vty_exec', key:w.key, cmd });
+    input.value = '';
+    renderVtyPop(wid);
+  } else if (e.key==='ArrowUp') {
+    e.preventDefault();
+    if (w.histIdx>0) { w.histIdx--; input.value=w.history[w.histIdx]||''; }
+  } else if (e.key==='ArrowDown') {
+    e.preventDefault();
+    if (w.histIdx<w.history.length-1) { w.histIdx++; input.value=w.history[w.histIdx]||''; }
+    else { w.histIdx=w.history.length; input.value=''; }
+  } else if (e.key==='Tab') {
+    e.preventDefault();
+    if (w.key) send({ type:'vty_exec', key:w.key, cmd:input.value+'?' });
   }
 }
 
-function showVty(idx, d) {
-  vty[idx].buffer += `\x1b[sys]Connected to op${d.opId}/${d.component}:${d.port}\x1b[/]\r\n`;
-  document.getElementById('vty-empty-'+idx).style.display='none';
-  document.getElementById('vty-screen-'+idx).style.display='block';
-  document.getElementById('vty-prm-'+idx).textContent = `op${d.opId}/${d.component}> `;
-  renderVty(idx);
-}
-
-function vtyOnData(d) {
-  const idx = vty.findIndex(v=>v.key===d.key);
-  if (idx<0) return;
-  vty[idx].buffer += d.data;
-  if (vty[idx].buffer.length > 120000) vty[idx].buffer = vty[idx].buffer.slice(-80000);
-  renderVty(idx);
-}
-
-function vtyOnError(d) {
-  const idx = vty.findIndex(v=>v.key===d.key);
-  if (idx>=0) { vty[idx].buffer += `\x1b[err]ERROR: ${d.msg}\x1b[/]\r\n`; renderVty(idx); }
-}
-
-function vtyOnDisc(d) {
-  const idx = vty.findIndex(v=>v.key===d.key);
-  if (idx>=0) {
-    vty[idx].buffer += '\r\n--- disconnected ---\r\n';
-    renderVty(idx);
-    vty[idx].key = null;
-    document.getElementById('vty-prm-'+idx).textContent = '$ ';
-  }
-}
-
-function renderVty(idx) {
-  const screen = document.getElementById('vty-screen-'+idx);
-  const raw = vty[idx].buffer;
-  screen.innerHTML = raw
+function renderVtyPop(wid) {
+  const w = vtyWindows[wid];
+  if (!w) return;
+  const screen = document.getElementById(wid+'-screen');
+  if (!screen) return;
+  screen.innerHTML = w.buffer
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/\x1b\[sys\](.*?)\x1b\[\/\]/gs, '<span class="sys">$1</span>')
     .replace(/\x1b\[err\](.*?)\x1b\[\/\]/gs, '<span class="err">$1</span>')
@@ -1131,50 +726,155 @@ function renderVty(idx) {
   screen.scrollTop = screen.scrollHeight;
 }
 
-function vtyKey(e, idx) {
-  const input = e.target;
-  const v = vty[idx];
-  if (e.key==='Enter') {
-    const cmd = input.value;
-    if (!v.key) return;
-    v.buffer += `\x1b[cmd]${cmd}\x1b[/]\r\n`;
-    v.history.push(cmd); v.histIdx = v.history.length;
-    send({ type:'vty_exec', key:v.key, cmd });
-    input.value = '';
-    renderVty(idx);
-  } else if (e.key==='ArrowUp') {
-    e.preventDefault();
-    if (v.histIdx>0) { v.histIdx--; input.value=v.history[v.histIdx]||''; }
-  } else if (e.key==='ArrowDown') {
-    e.preventDefault();
-    if (v.histIdx<v.history.length-1) { v.histIdx++; input.value=v.history[v.histIdx]||''; }
-    else { v.histIdx=v.history.length; input.value=''; }
-  } else if (e.key==='Tab') {
-    e.preventDefault();
-    if (v.key) send({ type:'vty_exec', key:v.key, cmd:input.value+'?' });
+function findVtyWid(key) {
+  for (const [wid, w] of Object.entries(vtyWindows)) {
+    if (w.key === key) return wid;
+  }
+  return null;
+}
+
+function vtyOnConnected(d) {
+  let wid = findVtyWid(d.key);
+  if (!wid) {
+    // Find a window without a key
+    for (const [w, state] of Object.entries(vtyWindows)) {
+      if (!state.key) { state.key = d.key; state.buffer = ''; wid = w; break; }
+    }
+    if (!wid) return;
+  }
+  const w = vtyWindows[wid];
+  const retryNote = d.retry > 0 ? ` (retry ${d.retry})` : '';
+  w.buffer += `\x1b[sys]Connected to op${d.opId}/${d.component}:${d.port}${retryNote}\x1b[/]\r\n`;
+  document.getElementById(wid+'-empty').style.display='none';
+  document.getElementById(wid+'-screen').style.display='block';
+  document.getElementById(wid+'-prm').textContent = `op${d.opId}/${d.component}> `;
+  const title = document.querySelector(`#${wid} .title`);
+  if (title) title.textContent = `VTY op${d.opId}/${d.component}`;
+  renderVtyPop(wid);
+}
+
+function vtyOnData(d) {
+  const wid = findVtyWid(d.key);
+  if (!wid) return;
+  const w = vtyWindows[wid];
+  w.buffer += d.data;
+  if (w.buffer.length > 120000) w.buffer = w.buffer.slice(-80000);
+  renderVtyPop(wid);
+}
+
+function vtyOnError(d) {
+  const wid = findVtyWid(d.key);
+  if (wid) { vtyWindows[wid].buffer += `\x1b[err]ERROR: ${d.msg}\x1b[/]\r\n`; renderVtyPop(wid); }
+}
+
+function vtyOnDisc(d) {
+  const wid = findVtyWid(d.key);
+  if (wid) {
+    vtyWindows[wid].buffer += '\r\n--- disconnected ---\r\n';
+    renderVtyPop(wid);
+    vtyWindows[wid].key = null;
+    document.getElementById(wid+'-prm').textContent = '$ ';
   }
 }
 
-function vtyClose(idx) {
-  if (vty[idx].key) {
-    send({ type:'vty_disconnect', key:vty[idx].key });
-    vty[idx].key = null;
-    vty[idx].buffer = '';
-    document.getElementById('vty-screen-'+idx).style.display='none';
-    document.getElementById('vty-screen-'+idx).innerHTML='';
-    document.getElementById('vty-empty-'+idx).style.display='flex';
-    document.getElementById('vty-prm-'+idx).textContent='$ ';
+// ═══ Dragging ═══
+let dragState = null;
+
+function startDrag(e, wid) {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
+  const el = document.getElementById(wid);
+  dragState = { el, startX: e.clientX, startY: e.clientY, origLeft: el.offsetLeft, origTop: el.offsetTop };
+  // Bring to front
+  document.querySelectorAll('.vty-popup').forEach(p => p.style.zIndex = 200);
+  el.style.zIndex = 201;
+  e.preventDefault();
+}
+
+document.addEventListener('mousemove', e => {
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  dragState.el.style.left = (dragState.origLeft + dx) + 'px';
+  dragState.el.style.top  = (dragState.origTop + dy) + 'px';
+});
+
+document.addEventListener('mouseup', () => { dragState = null; });
+
+// ═══ Audio Stream: PCM via WebSocket → Web Audio API ═══
+let audioCtx = null;
+let audioPlaying = false;
+let audioNextTime = 0;
+const AUDIO_RATE = 8000;
+const AUDIO_BUFFER_SECS = 0.04; // 40ms chunks min
+
+function toggleAudio() {
+  const btn = document.getElementById('audio-btn');
+  if (audioPlaying) {
+    // Stop
+    send({ type: 'audio_stop' });
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    audioPlaying = false;
+    audioNextTime = 0;
+    btn.textContent = '🔇 Audio';
+    btn.classList.remove('active');
+  } else {
+    // Start
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: AUDIO_RATE });
+    audioNextTime = 0;
+    audioPlaying = true;
+    btn.textContent = '🔊 Audio';
+    btn.classList.add('active');
+    send({ type: 'audio_start' });
   }
 }
 
-// ═══ Helpers ═════════════════════════════════════════════════
+// Handle incoming binary PCM data from WebSocket
+function handleAudioData(data) {
+  if (!audioCtx || !audioPlaying) return;
+
+  // data is ArrayBuffer of s16le PCM
+  const samples = new Int16Array(data);
+  const floats = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    floats[i] = samples[i] / 32768;
+  }
+
+  const buf = audioCtx.createBuffer(1, floats.length, AUDIO_RATE);
+  buf.getChannelData(0).set(floats);
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  if (audioNextTime < now) {
+    // Fell behind or first chunk — schedule a tiny bit ahead
+    audioNextTime = now + 0.01;
+  }
+  src.start(audioNextTime);
+  audioNextTime += buf.duration;
+}
+
+// Hook audio messages in handle()
+function handleAudioMsg(msg) {
+  if (msg.type === 'audio_started') {
+    const btn = document.getElementById('audio-btn');
+    btn.textContent = '🔊 Audio';
+    btn.classList.add('active');
+  } else if (msg.type === 'audio_stopped' || msg.type === 'audio_error') {
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    audioPlaying = false;
+    audioNextTime = 0;
+    const btn = document.getElementById('audio-btn');
+    btn.textContent = '🔇 Audio';
+    btn.classList.remove('active');
+  }
+}
+
+// ═══ Helpers ═══
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ═══ Init VTY screens hidden ═════════════════════════════════
-document.getElementById('vty-screen-0').style.display='none';
-document.getElementById('vty-screen-1').style.display='none';
-
-// ═══ Boot ════════════════════════════════════════════════════
+// ═══ Init ═══
 connectWs();
 </script>
 </body>
