@@ -1,5 +1,5 @@
 'use strict';
-
+const os = require('os');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +26,7 @@ const VTY_RETRY_DELAY = 2000;
 
 function log(...a)  { console.log(`[${new Date().toISOString()}]`, ...a); }
 function dbg(...a)  { if (VERBOSE) console.log('[DBG]', ...a); }
+
 
 // ─── GSMTAP Channel Type Map ─────────────────────────────────
 const GSMTAP_CHAN = {
@@ -298,7 +299,7 @@ class VtySessionManager {
     }
     session.write(cmd);
   }
-
+ 
   disconnect(key) {
     const session = this.sessions.get(key);
     if (session) { session.close(); this.sessions.delete(key); }
@@ -341,17 +342,56 @@ class TsharkSession {
     log(`tshark start for client ${this.clientId}`);
 
     const FILTER = `udp port ${GSMTAP_UDP} or sctp`;
+    const DOCKER_GW_IP = process.env.DOCKER_GW_IP || '172.20.0.1';
+    const ENV_CAP_IFACE = process.env.CAP_IFACE || '';
+    function findIfaceByIp(ip) {
+      const nets = os.networkInterfaces();
 
+      for (const [iface, addrs] of Object.entries(nets)) {
+        for (const addr of addrs || []) {
+          if (addr.family === 'IPv4' && addr.address === ip) {
+            return iface;
+          }
+        }
+      }
+
+      return null;
+    }
+    function selectCaptureInterface() {
+      if (ENV_CAP_IFACE) {
+        log(`Capture interface forced by CAP_IFACE=${ENV_CAP_IFACE}`);
+        return ENV_CAP_IFACE;
+      }
+
+      const gwIface = findIfaceByIp(DOCKER_GW_IP);
+      if (gwIface) {
+        log(`Capture interface auto-selected from Docker GW ${DOCKER_GW_IP}: ${gwIface}`);
+        return gwIface;
+      }
+
+      log(`Docker GW ${DOCKER_GW_IP} not found, fallback to 'any'`);
+      return 'any';
+    }
+
+    const CAP_IFACE = selectCaptureInterface();
     // ── Process texte ────────────────────────────────────────
     this.proc = spawn('tshark', [
-      '-i', 'any', '-p', '-f', FILTER, '-l', '-n',
+      '-i', CAP_IFACE,
+      '-p',
+      '-f', FILTER,
+      '-l',
+      '-n',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    // ── Process EK ───────────────────────────────────────────
     this.ekProc = spawn('tshark', [
-      '-i', 'any', '-p', '-f', FILTER, '-T', 'ek', '-l', '-n', '-x',
+      '-i', CAP_IFACE,
+      '-p',
+      '-f', FILTER,
+      '-T', 'ek',
+      '-l',
+      '-n',
+      '-x',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
     this.running = true;
     this.txtBuf = '';
     this.ekBuf  = '';

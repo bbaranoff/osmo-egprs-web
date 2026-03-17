@@ -23,4 +23,4 @@ RUN node --check server.js && echo "server.js OK" && ls -la /app/
 EXPOSE 80
 EXPOSE 4729/udp
 
-CMD ["node", "server.js"]
+CMD ["node", "server.js" , "--verbose"]
