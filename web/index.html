@@ -84,9 +84,6 @@
   .btn.danger:hover { background:rgba(220,50,47,0.15); color:var(--red); }
   .btn.vty-btn { border-color:rgba(42,161,152,0.4); }
   .btn.vty-btn:hover { background:rgba(42,161,152,0.15); color:var(--cyan); }
-  .btn.audio-btn { border-color:rgba(181,137,0,0.4); }
-  .btn.audio-btn:hover { background:rgba(181,137,0,0.15); color:var(--yellow); }
-  .btn.audio-btn.active { background:rgba(181,137,0,0.2); color:var(--yellow); border-color:var(--yellow); }
   .theme-btn {
     background:var(--bg-2); border:1px solid var(--border-b); color:var(--t2);
     width:34px; height:34px; border-radius:50%; cursor:pointer;
@@ -315,7 +312,6 @@
       <button class="btn" onclick="send({type:'poll'})">⟳ Refresh</button>
       <button class="btn" onclick="clearPackets()">Clear</button>
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
-      <button class="btn audio-btn" id="audio-btn" onclick="toggleAudio()">🔇 Audio</button>
       <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
       <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
     </div>
@@ -405,10 +401,6 @@ function connectWs() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { setWs(true); reconnectDelay = 1000; };
   ws.onmessage = e => {
-    if (e.data instanceof ArrayBuffer) {
-      handleAudioData(e.data);
-      return;
-    }
     handle(JSON.parse(e.data));
   };
   ws.onclose = () => { setWs(false); setTimeout(connectWs, reconnectDelay); reconnectDelay = Math.min(reconnectDelay*1.5, 10000); };
@@ -440,7 +432,6 @@ function handle(msg) {
     case 'vty_data': vtyOnData(msg.data); break;
     case 'vty_error': vtyOnError(msg.data); break;
     case 'vty_disconnected': vtyOnDisc(msg.data); break;
-    case 'audio_started': case 'audio_stopped': case 'audio_error': handleAudioMsg(msg); break;
   }
 }
 
@@ -802,77 +793,6 @@ document.addEventListener('mousemove', e => {
 });
 
 document.addEventListener('mouseup', () => { dragState = null; });
-
-// ═══ Audio Stream: PCM via WebSocket → Web Audio API ═══
-let audioCtx = null;
-let audioPlaying = false;
-let audioNextTime = 0;
-const AUDIO_RATE = 8000;
-const AUDIO_BUFFER_SECS = 0.04; // 40ms chunks min
-
-function toggleAudio() {
-  const btn = document.getElementById('audio-btn');
-  if (audioPlaying) {
-    // Stop
-    send({ type: 'audio_stop' });
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    audioPlaying = false;
-    audioNextTime = 0;
-    btn.textContent = '🔇 Audio';
-    btn.classList.remove('active');
-  } else {
-    // Start
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: AUDIO_RATE });
-    audioNextTime = 0;
-    audioPlaying = true;
-    btn.textContent = '🔊 Audio';
-    btn.classList.add('active');
-    send({ type: 'audio_start' });
-  }
-}
-
-// Handle incoming binary PCM data from WebSocket
-function handleAudioData(data) {
-  if (!audioCtx || !audioPlaying) return;
-
-  // data is ArrayBuffer of s16le PCM
-  const samples = new Int16Array(data);
-  const floats = new Float32Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    floats[i] = samples[i] / 32768;
-  }
-
-  const buf = audioCtx.createBuffer(1, floats.length, AUDIO_RATE);
-  buf.getChannelData(0).set(floats);
-
-  const src = audioCtx.createBufferSource();
-  src.buffer = buf;
-  src.connect(audioCtx.destination);
-
-  const now = audioCtx.currentTime;
-  if (audioNextTime < now) {
-    // Fell behind or first chunk — schedule a tiny bit ahead
-    audioNextTime = now + 0.01;
-  }
-  src.start(audioNextTime);
-  audioNextTime += buf.duration;
-}
-
-// Hook audio messages in handle()
-function handleAudioMsg(msg) {
-  if (msg.type === 'audio_started') {
-    const btn = document.getElementById('audio-btn');
-    btn.textContent = '🔊 Audio';
-    btn.classList.add('active');
-  } else if (msg.type === 'audio_stopped' || msg.type === 'audio_error') {
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    audioPlaying = false;
-    audioNextTime = 0;
-    const btn = document.getElementById('audio-btn');
-    btn.textContent = '🔇 Audio';
-    btn.classList.remove('active');
-  }
-}
 
 // ═══ Helpers ═══
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

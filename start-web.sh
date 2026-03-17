@@ -28,8 +28,11 @@ docker build -t osmo-egprs-web -f Dockerfile .
 # Run
 echo "Starting..."
 docker run -d \
+  -e PULSE_SERVER=unix:/tmp/pulse/native \
+  -v /run/user/1000/pulse/native:/tmp/pulse/native \
+  -v /home/nirvana/.config/pulse/cookie:/root/.config/pulse/cookie:ro \
   --name "$WEB" \
-  --network "$NETWORK" \
+  --network host \
   --cap-add=NET_RAW \
   --cap-add=NET_ADMIN \
   -p 80:80 \

@@ -14,9 +14,7 @@ const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.includes('--verbose');
 
 // PulseAudio — for audio streaming to browser
-const REAL_UID   = process.env.SUDO_UID || process.env.UID || '1000';
-const PULSE_SRV  = process.env.PULSE_SERVER || `/run/user/${REAL_UID}/pulse/native`;
-const AUDIO_SINK = process.env.AUDIO_SINK || 'gsm_audio.monitor';
+// PULSE_SERVER is set inside containers by start.sh (unix:/run/pulse/native)
 
 const VTY_PORTS = {
   bsc: 4242, msc: 4254, hlr: 4258, mgw: 4243, stp: 4239,
@@ -37,38 +35,6 @@ const GSMTAP_CHAN = {
   '12': 'PTCCH', '13': 'CBCH51', '128': 'ACCH',
 };
 
-const GSMTAP_CHAN_SUBTYPES = {
-  '0x0000': 'BCCH', '0x0001': 'CCCH', '0x0002': 'SDCCH/4',
-  '0x0004': 'SDCCH/8', '0x0008': 'FACCH/F', '0x0009': 'FACCH/H',
-  '0x000a': 'SACCH/TF', '0x000b': 'SACCH/TH',
-};
-
-// GSM A RR message type names
-const RR_MSG_TYPES = {
-  '0': 'System Information Type 13',
-  '1': 'System Information Type 14',
-  '2': 'System Information Type 2bis',
-  '3': 'System Information Type 2ter',
-  '6': 'System Information Type 9',
-  '13': 'Channel Release',
-  '21': 'Measurement Report',
-  '25': 'System Information Type 5',
-  '26': 'System Information Type 5bis',
-  '27': 'System Information Type 5ter',
-  '28': 'System Information Type 6',
-  '29': 'Paging Response',
-  '32': 'Paging Request Type 1',
-  '33': 'Paging Request Type 2',
-  '34': 'Paging Request Type 3',
-  '35': 'Assignment Command',
-  '41': 'Immediate Assignment',
-  '57': 'Ciphering Mode Command',
-  '59': 'System Information Type 1',
-  '26': 'System Information Type 2',
-  '27': 'System Information Type 3',
-  '28': 'System Information Type 4',
-  '63': 'Handover Command',
-};
 
 // ─── State ───────────────────────────────────────────────────
 let operators = {};
@@ -351,126 +317,134 @@ class VtySessionManager {
   }
 }
 
-// ─── tshark Capture: GSMTAP + SCTP with text parse ──────────
+// ─── tshark Capture ──────────────────────────────────────────
+// Deux processus synchronisés par numéro de trame (robuste vs shift()).
+//   proc    : tshark texte  → champ info tel que tshark le formate
+//   ekProc  : tshark -T ek  → arfcn, chan_type, uplink, hex dump
+// Le texte arrive en premier ; on stocke les EK dans ekMap[frameNum]
+// et on fusionne dès que les deux sont disponibles.
 class TsharkSession {
   constructor(ws, clientId) {
-    this.ws = ws;
+    this.ws       = ws;
     this.clientId = clientId;
-    this.proc = null;
-    this.ekProc = null;
-    this.running = false;
-    this.buffer = '';
-    this.ekBuffer = '';
-    this.ekPackets = [];  // queue of parsed ek JSON packets
-    this.textPackets = []; // queue of parsed text summary lines
+    this.proc     = null;
+    this.ekProc   = null;
+    this.running  = false;
+    this.txtBuf   = '';
+    this.ekBuf    = '';
+    this.ekMap    = new Map();   // frameNum → ek.layers
+    this.txtMap   = new Map();   // frameNum → parsed text pkt
   }
 
   start() {
     if (this.running) return;
     log(`tshark start for client ${this.clientId}`);
-    this.running = true;
 
-    // Process 1: tshark text output for nice summary lines
+    const FILTER = `udp port ${GSMTAP_UDP} or sctp`;
+
+    // ── Process texte ────────────────────────────────────────
     this.proc = spawn('tshark', [
-      '-i', 'any',
-      '-f', `udp port ${GSMTAP_UDP} or sctp`,
-      '-l',
-      '-n',
+      '-i', 'any', '-p', '-f', FILTER, '-l', '-n',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    // Process 2: tshark -T ek for JSON dissection + hex
+    // ── Process EK ───────────────────────────────────────────
     this.ekProc = spawn('tshark', [
-      '-i', 'any',
-      '-f', `udp port ${GSMTAP_UDP} or sctp`,
-      '-T', 'ek',
-      '-l',
-      '-n',
-      '-x',
+      '-i', 'any', '-p', '-f', FILTER, '-T', 'ek', '-l', '-n', '-x',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    this.buffer = '';
-    this.ekBuffer = '';
+    this.running = true;
+    this.txtBuf = '';
+    this.ekBuf  = '';
 
-    // Text output: parse one-line summaries
+    // ── Texte → parseTextLine → txtMap → tryMerge ────────────
     this.proc.stdout.on('data', chunk => {
-      this.buffer += chunk.toString();
+      this.txtBuf += chunk.toString();
       let nl;
-      while ((nl = this.buffer.indexOf('\n')) !== -1) {
-        const line = this.buffer.substring(0, nl).trim();
-        this.buffer = this.buffer.substring(nl + 1);
+      while ((nl = this.txtBuf.indexOf('\n')) !== -1) {
+        const line = this.txtBuf.substring(0, nl).trim();
+        this.txtBuf = this.txtBuf.substring(nl + 1);
         if (!line) continue;
+        dbg(`TXT RAW: ${line}`);
         const parsed = this.parseTextLine(line);
         if (parsed) {
-          // Try to match with an ek packet for dissection
-          const ek = this.ekPackets.shift();
-          const packet = this.mergePacket(parsed, ek);
-          if (packet) this.sendToClient('packet', packet);
+          dbg(`TXT PARSED #${parsed.frameNum}: ${parsed.info}`);
+          this.txtMap.set(parsed.frameNum, parsed);
+          this.tryMerge(parsed.frameNum);
         }
       }
     });
 
     this.proc.stderr.on('data', d => {
       const msg = d.toString().trim();
-      if (msg && !msg.startsWith('Capturing on')) {
-        this.sendToClient('tshark_log', { msg });
-      }
+      if (msg) log(`tshark text stderr [${this.clientId}]: ${msg}`);
     });
 
-    this.proc.on('close', (code) => {
-      log(`tshark text client ${this.clientId} stopped (code ${code})`);
-      this.running = false;
+    this.proc.on('close', code => {
+      log(`tshark text [${this.clientId}] stopped (code ${code})`);
+      if (this.running) { this.running = false; tsharkActiveClients--; broadcastTsharkStatus(); }
       this.sendToClient('tshark_stopped', { code });
-      tsharkActiveClients--;
-      broadcastTsharkStatus();
     });
 
-    this.proc.on('error', (err) => {
-      log(`tshark text client ${this.clientId} error:`, err.message);
-      this.running = false;
+    this.proc.on('error', err => {
+      log(`tshark text [${this.clientId}] error: ${err.message}`);
+      if (this.running) { this.running = false; tsharkActiveClients--; broadcastTsharkStatus(); }
       this.sendToClient('tshark_error', { msg: err.message });
-      tsharkActiveClients--;
-      broadcastTsharkStatus();
     });
 
-    // EK JSON output: parse for dissection data
+    // ── EK → ekMap → tryMerge ────────────────────────────────
     this.ekProc.stdout.on('data', chunk => {
-      this.ekBuffer += chunk.toString();
+      this.ekBuf += chunk.toString();
       let nl;
-      while ((nl = this.ekBuffer.indexOf('\n')) !== -1) {
-        const line = this.ekBuffer.substring(0, nl).trim();
-        this.ekBuffer = this.ekBuffer.substring(nl + 1);
+      while ((nl = this.ekBuf.indexOf('\n')) !== -1) {
+        const line = this.ekBuf.substring(0, nl).trim();
+        this.ekBuf = this.ekBuf.substring(nl + 1);
         if (!line || line.startsWith('{"index"')) continue;
         try {
-          const pkt = JSON.parse(line);
-          if (pkt.layers) {
-            // Drop TRX Clock / jitter noise (same filter as text parser)
-            const flen = pkt.layers.frame && pkt.layers.frame.frame_frame_len;
-            const frameLen = Array.isArray(flen) ? parseInt(flen[0]) : parseInt(flen);
-            if (frameLen === 210 || frameLen === 184 || frameLen === 185) continue;
-            this.ekPackets.push(pkt);
-            while (this.ekPackets.length > 50) this.ekPackets.shift();
-          }
+          const ek = JSON.parse(line);
+          if (!ek.layers) continue;
+          const fnRaw = ek.layers.frame && ek.layers.frame.frame_frame_number;
+          const frameNum = Array.isArray(fnRaw) ? parseInt(fnRaw[0]) : parseInt(fnRaw);
+          if (!frameNum) continue;
+          this.ekMap.set(frameNum, ek.layers);
+          this.tryMerge(frameNum);
         } catch {}
       }
     });
 
-    this.ekProc.stderr.on('data', () => {}); // ignore
-    this.ekProc.on('close', () => {});
-    this.ekProc.on('error', () => {});
+    this.ekProc.stderr.on('data', d => { const m = d.toString().trim(); if (m) log(`tshark ek stderr: ${m}`); });
+    this.ekProc.on('close', code => { log(`tshark ek closed (code ${code})`); });
+    this.ekProc.on('error', err => { log(`tshark ek error: ${err.message}`); });
 
     tsharkActiveClients++;
     broadcastTsharkStatus();
   }
 
+  // Fusionne texte + EK dès que les deux sont présents pour frameNum.
+  // Si EK n'arrive pas dans un délai raisonnable, envoie quand même le texte seul.
+  tryMerge(frameNum) {
+    const txt = this.txtMap.get(frameNum);
+    const ek  = this.ekMap.get(frameNum);
+    if (!txt) return;
+
+    if (ek) {
+      this.txtMap.delete(frameNum);
+      this.ekMap.delete(frameNum);
+      const pkt = this.buildPacket(txt, ek);
+      if (pkt) this.sendToClient('packet', pkt);
+    } else {
+      // Fallback : envoyer le texte seul après 500 ms si EK absent
+      setTimeout(() => {
+        if (!this.txtMap.has(frameNum)) return; // déjà mergé
+        this.txtMap.delete(frameNum);
+        const pkt = this.buildPacket(txt, null);
+        if (pkt) this.sendToClient('packet', pkt);
+      }, 500);
+    }
+  }
+
   stop() {
-    if (this.proc) {
-      this.proc.kill('SIGTERM');
-      this.proc = null;
-    }
-    if (this.ekProc) {
-      this.ekProc.kill('SIGTERM');
-      this.ekProc = null;
-    }
+    if (this.proc)   { try { this.proc.kill('SIGTERM'); }   catch {} this.proc   = null; }
+    if (this.ekProc) { try { this.ekProc.kill('SIGTERM'); } catch {} this.ekProc = null; }
     if (this.running) {
       this.running = false;
       log(`tshark client ${this.clientId} stopped`);
@@ -479,132 +453,93 @@ class TsharkSession {
     }
   }
 
+  // Parse une ligne texte tshark :
+  //   "  42 1.234567 172.20.0.12 → 172.20.0.1 GSMTAP 83 (BCCH) System Information Type 3"
   parseTextLine(line) {
-    // Parse tshark text output line like:
-    //   1 0.000000 172.20.0.12 → 172.20.0.1 GSMTAP 83 (CCCH) (RR) System Information Type 4
-    const m = line.match(
-      /^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(?:→|->)\s+(\S+)\s+(\S+)\s+(\d+)\s*(.*)/
-    );
+    const m = line.match(/^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(?:→|->)\s+(\S+)\s+(\S+)\s+(\d+)\s*(.*)/);
     if (!m) return null;
-
-    const src = m[3], dst = m[4];
-
-    packetIdGlobal++;
     const info = m[7].trim() || m[5];
-
-    // Drop TRX Clock / jitter noise
-    if (info.includes('TRX Clock Ind') || info.includes('clock jitter')) return null;
-
+    // Blacklist bruit TRX/clock
+    const BLACKLIST = ['TRX Clock Ind', 'clock jitter', 'GSM clock', 'elapsed_fn'];
+    if (BLACKLIST.some(s => info.includes(s))) return null;
+    packetIdGlobal++;
     return {
       id: packetIdGlobal,
+      frameNum: parseInt(m[1]),
       ts: parseFloat(m[2]),
-      src,
-      dst,
+      src: m[3], dst: m[4],
       protocol: m[5],
       length: parseInt(m[6]),
       info,
     };
   }
 
-  mergePacket(text, ek) {
-    let opId = '';
-    let direction = '';
-
+  // Construit le paquet final : info du texte, métadonnées GSMTAP/SCTP de l'EK.
+  buildPacket(txt, layers) {
     const pkt = {
-      id: text.id,
-      ts: text.ts,
-      src: text.src,
-      dst: text.dst,
-      protocol: text.protocol,
-      length: text.length,
-      info: text.info,
-      arfcn: '',
-      uplink: false,
-      channel: '',
-      timeslot: '',
-      fn: '',
-      layers: null,
+      id: txt.id, ts: txt.ts,
+      src: txt.src, dst: txt.dst,
+      protocol: txt.protocol, length: txt.length,
+      info: txt.info,           // ← directement de tshark
+      arfcn: '', uplink: false,
+      channel: '', timeslot: '', fn: '',
+      layers: layers || null,
       hexDump: null,
+      opLabel: '—', direction: '',
     };
 
-    let hasGsmtap = false;
-    let hasSctp = false;
+    let hasGsmtap = false, hasSctp = false;
 
-    if (ek && ek.layers) {
-      pkt.layers = ek.layers;
+    if (layers) {
+      // Hex dump
+      const fr = layers.frame;
+      if (fr && fr.frame_frame_raw) {
+        const r = fr.frame_frame_raw;
+        pkt.hexDump = Array.isArray(r) ? r[0] : r;
+      }
 
-      const gt = ek.layers.gsmtap;
+      // GSMTAP
+      if (layers.gsmtap_log) return null; // bruit log OsmoBSC
+      const gt = layers.gsmtap;
       if (gt) {
-        hasGsmtap = true;
+        hasGsmtap    = true;
         pkt.arfcn    = this.getField(gt, 'gsmtap_gsmtap_arfcn');
         pkt.uplink   = this.getField(gt, 'gsmtap_gsmtap_uplink') === '1';
         pkt.channel  = this.getField(gt, 'gsmtap_gsmtap_chan_type');
         pkt.timeslot = this.getField(gt, 'gsmtap_gsmtap_timeslot');
         pkt.fn       = this.getField(gt, 'gsmtap_gsmtap_frame_nr');
-        direction = pkt.uplink ? 'UL' : 'DL';
+        pkt.direction = pkt.uplink ? 'UL' : 'DL';
+        const arfcn = parseInt(pkt.arfcn);
+        const opNum = Math.floor((arfcn - 514) / 2) + 1;
+        pkt.opLabel = (opNum >= 1 && opNum <= 24) ? `OP${opNum}` : `A${arfcn}`;
       }
+      if (layers.gsm_trx) return null;
 
-      // Extract hex dump
-      if (ek.layers.frame && ek.layers.frame.frame_frame_raw) {
-        const rawArr = ek.layers.frame.frame_frame_raw;
-        pkt.hexDump = Array.isArray(rawArr) ? rawArr[0] : rawArr;
-      } else {
-        for (const [k, v] of Object.entries(ek.layers)) {
-          if (k.endsWith('_raw') && typeof v === 'object') {
-            const vals = Array.isArray(v) ? v : [v];
-            for (const val of vals) {
-              if (typeof val === 'string' && val.length > 10) {
-                pkt.hexDump = val;
-                break;
-              }
-            }
-          }
-          if (pkt.hexDump) break;
-        }
-      }
-
-      if (ek.layers.sctp) {
+      // SCTP / M3UA
+      const sctp = layers.sctp;
+      if (sctp) {
         hasSctp = true;
-        const sctp = ek.layers.sctp;
-        const srcPort = this.getField(sctp, 'sctp_sctp_srcport');
-        const dstPort = this.getField(sctp, 'sctp_sctp_dstport');
-        if (srcPort || dstPort) pkt.sctpPorts = `${srcPort} → ${dstPort}`;
+        pkt.protocol = layers.m3ua ? 'M3UA' : 'SCTP';
+        const sp = this.getField(sctp, 'sctp_sctp_srcport');
+        const dp = this.getField(sctp, 'sctp_sctp_dstport');
+        pkt.sctpPorts = `${sp} → ${dp}`;
+        const ipToOp = ip => {
+          const mm = ip && ip.match(/^172\.20\.0\.(\d+)$/);
+          if (mm) { const n = parseInt(mm[1]); if (n >= 11) return `OP${n - 10}`; }
+          return '';
+        };
+        const sOp = ipToOp(txt.src), dOp = ipToOp(txt.dst);
+        if (sOp && dOp) { pkt.opLabel = `${sOp}/${dOp}`; pkt.direction = `${sOp}→${dOp}`; }
+        else if (sOp)   { pkt.opLabel = sOp; pkt.direction = 'UL'; }
+        else if (dOp)   { pkt.opLabel = dOp; pkt.direction = 'DL'; }
       }
+    } else {
+      // Pas d'EK : déduire depuis le texte
+      hasGsmtap = txt.protocol.toUpperCase().includes('GSMTAP');
+      hasSctp   = txt.protocol.toUpperCase().includes('SCTP') || txt.protocol.toUpperCase().includes('M3UA');
     }
 
-    // Drop packets that are neither GSMTAP nor SCTP (forwarded noise)
-    const textProto = (text.protocol || '').toLowerCase();
-    const isKnown = hasGsmtap || hasSctp || textProto.includes('gsmtap') || textProto.includes('sctp') || textProto.includes('m3ua');
-    if (!isKnown) return null;
-
-    // ARFCN → Operator: base=514, step=2. 514=OP1, 516=OP2, 518=OP3...
-    if (pkt.arfcn) {
-      const arfcn = parseInt(pkt.arfcn);
-      const opNum = Math.floor((arfcn - 514) / 2) + 1;
-      if (opNum >= 1 && opNum <= 24) {
-        opId = `OP${opNum}`;
-      } else {
-        opId = `A${arfcn}`;
-      }
-    }
-
-    if (hasSctp) {
-      // SCTP: derive ops from IPs
-      const ipToOp = (ip) => {
-        const m = ip && ip.match(/^172\.20\.0\.(\d+)$/);
-        if (m) { const n = parseInt(m[1]); if (n >= 11) return `OP${n-10}`; }
-        return '';
-      };
-      const sOp = ipToOp(text.src);
-      const dOp = ipToOp(text.dst);
-      if (sOp && dOp) { opId = `${sOp}/${dOp}`; direction = `${sOp}→${dOp}`; }
-      else if (sOp) { opId = sOp; direction = 'UL'; }
-      else if (dOp) { opId = dOp; direction = 'DL'; }
-    }
-
-    pkt.opLabel = opId || '—';
-    pkt.direction = direction || (pkt.uplink ? 'UL' : 'DL');
-
+    if (!hasGsmtap && !hasSctp) return null;
     return pkt;
   }
 
@@ -643,6 +578,52 @@ const MIME = {
 const webDir = path.join(__dirname, 'web');
 
 const httpServer = http.createServer((req, res) => {
+  // ── /audio : stream MP3 depuis le FIFO du container ─────────
+  if (req.url === '/audio') {
+    // Tuer le drain, lancer ffmpeg
+    stopDrain();
+    stopAudioFfmpeg();
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    audioFfmpeg = spawn('docker', [
+      'exec', AUDIO_CONTAINER,
+      'ffmpeg', '-f', 's16le', '-ar', '8000', '-ac', '1',
+      '-i', AUDIO_FIFO,
+      '-acodec', 'libmp3lame', '-b:a', '8k',
+      '-f', 'mp3', 'pipe:1'
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    audioFfmpeg.stdout.pipe(res);
+    audioFfmpeg.on('close', () => { audioFfmpeg = null; startDrain(); });
+    audioFfmpeg.on('error', () => { audioFfmpeg = null; startDrain(); });
+    req.on('close', () => { stopAudioFfmpeg(); startDrain(); });
+    log('Audio: client connecté → ffmpeg démarré');
+    return;
+  }
+
+  if (req.url === '/api/debug-ek') {
+    // Capture un paquet GSMTAP en EK brut pour inspecter les noms de champs
+    const { execSync: ex } = require('child_process');
+    try {
+      const out = ex(
+        `tshark -i any -p -f "udp port ${GSMTAP_UDP}" -T ek -c 1 -n -l`,
+        { timeout: 12000, encoding: 'utf-8', shell: true }
+      ).trim();
+      // tshark -T ek émet une ligne {"index":...} puis une ligne {"layers":...}
+      const layersLine = out.split('\n').find(l => l.includes('"layers"'));
+      if (!layersLine) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'no packet captured', raw: out }));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(layersLine);
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ operators, activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
@@ -667,7 +648,7 @@ wss.on('connection', (ws, req) => {
   const clientId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
   const vtyMgr = new VtySessionManager(ws);
   const tsharkSession = new TsharkSession(ws, clientId);
-  const clientObj = { ws, vtyMgr, tsharkSession, clientId, audioProc: null };
+  const clientObj = { ws, vtyMgr, tsharkSession, clientId, audioActive: false };
   clients.add(clientObj);
 
   ws.send(JSON.stringify({
@@ -691,8 +672,6 @@ wss.on('connection', (ws, req) => {
       case 'tshark_start':  tsharkSession.start(); break;
       case 'tshark_stop':   tsharkSession.stop(); break;
       case 'poll':          pollAll(); break;
-      case 'audio_start':   startAudio(clientObj); break;
-      case 'audio_stop':    stopAudio(clientObj); break;
     }
   });
 
@@ -705,67 +684,48 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// ─── Audio: PCM via WebSocket (low latency) ─────────────────
-// Spawns: docker exec -e PULSE_SERVER=... osmo-operator-1 parec --format=s16le --rate=8000 --channels=1 -d gsm_audio.monitor
-// Sends raw s16le PCM chunks as binary WebSocket frames → browser Web Audio API
+// ─── Audio: FIFO → ffmpeg MP3 → HTTP /audio ──────────────────
+// Architecture :
+//   mobile → ALSA type file → /tmp/gsm-audio.fifo (dans le container)
+//   drain  : cat > /dev/null (maintient le FIFO ouvert quand pas de client)
+//   client : GET /audio → docker exec ffmpeg lit le FIFO → MP3 stream
+//
+// Un seul client audio à la fois (FIFO = flux unique).
+// Le drain est tué quand un client se connecte, relancé à sa déconnexion.
 
-function startAudio(clientObj) {
-  if (clientObj.audioProc) return; // already streaming
+const AUDIO_FIFO      = process.env.AUDIO_FIFO || '/tmp/gsm-audio.fifo';
+const AUDIO_CONTAINER = `${PREFIX}1`;
 
-  const container = `${PREFIX}1`; // op1 has PulseAudio
-  log(`Audio start for client ${clientObj.clientId} via ${container}`);
+let audioDrain  = null;   // cat drain
+let audioFfmpeg = null;   // ffmpeg actif
 
-  const proc = spawn('docker', [
-    'exec', '-e', `PULSE_SERVER=${PULSE_SRV}`,
-    container,
-    'parec',
-    '--format=s16le',
-    '--rate=8000',
-    '--channels=1',
-    '--latency-msec=20',
-    '-d', AUDIO_SINK,
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+function startDrain() {
+  if (audioDrain) return;
+  audioDrain = spawn('docker', [
+    'exec', AUDIO_CONTAINER,
+    'sh', '-c', `cat ${AUDIO_FIFO} > /dev/null`
+  ], { stdio: 'ignore' });
+  audioDrain.on('close', () => { audioDrain = null; });
+  audioDrain.on('error', () => { audioDrain = null; });
+  log('Audio: drain FIFO démarré');
+}
 
-  clientObj.audioProc = proc;
-
-  proc.stdout.on('data', chunk => {
-    if (clientObj.ws.readyState === WebSocket.OPEN) {
-      clientObj.ws.send(chunk, { binary: true });
-    }
-  });
-
-  proc.stderr.on('data', d => {
-    const msg = d.toString().trim();
-    if (msg) dbg('parec:', msg);
-  });
-
-  proc.on('error', err => {
-    log(`Audio parec error: ${err.message}`);
-    clientObj.audioProc = null;
-    if (clientObj.ws.readyState === WebSocket.OPEN) {
-      clientObj.ws.send(JSON.stringify({ type: 'audio_error', data: { msg: err.message } }));
-    }
-  });
-
-  proc.on('close', code => {
-    log(`Audio parec ended (code ${code}) for client ${clientObj.clientId}`);
-    clientObj.audioProc = null;
-    if (clientObj.ws.readyState === WebSocket.OPEN) {
-      clientObj.ws.send(JSON.stringify({ type: 'audio_stopped', data: { code } }));
-    }
-  });
-
-  if (clientObj.ws.readyState === WebSocket.OPEN) {
-    clientObj.ws.send(JSON.stringify({ type: 'audio_started', data: { rate: 8000, channels: 1, format: 's16le' } }));
+function stopDrain() {
+  if (audioDrain) {
+    try { audioDrain.kill('SIGTERM'); } catch {}
+    audioDrain = null;
   }
 }
 
-function stopAudio(clientObj) {
-  if (clientObj.audioProc) {
-    log(`Audio stop for client ${clientObj.clientId}`);
-    try { clientObj.audioProc.kill('SIGTERM'); } catch {}
-    clientObj.audioProc = null;
+function stopAudioFfmpeg() {
+  if (audioFfmpeg) {
+    try { audioFfmpeg.kill('SIGTERM'); } catch {}
+    audioFfmpeg = null;
   }
+}
+
+function ensureAudioDrain() {
+  if (!audioDrain && !audioFfmpeg) startDrain();
 }
 
 // ─── Boot ────────────────────────────────────────────────────
@@ -773,6 +733,7 @@ httpServer.listen(PORT, () => {
   const ops = discoverOperators();
   activeOpIds = ops;
   log(`osmo-egprs-web listening on :${PORT}`);
+  ensureAudioDrain();
   log(`Operators: [${ops.join(', ')}] (${ops.length})`);
   log(`Capture filter: udp port ${GSMTAP_UDP} or sctp`);
 });
@@ -785,8 +746,8 @@ process.on('SIGINT', () => {
   for (const client of clients) {
     client.tsharkSession.stop();
     client.vtyMgr.closeAll();
-    stopAudio(client);
   }
+  stopAudioFfmpeg(); startDrain();
   wss.close();
   httpServer.close();
   process.exit(0);

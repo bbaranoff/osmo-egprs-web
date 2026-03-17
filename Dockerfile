@@ -1,26 +1,24 @@
 FROM node:20-alpine
 
-# tshark for Wireshark-grade protocol decoding, docker-cli for container discovery
+# tshark (utilise dumpcap pour la capture), docker-cli, parec/pactl
 RUN apk add --no-cache \
-    tshark \
+    wireshark \
     docker-cli \
     libcap \
-    ffmpeg \
+    pulseaudio-utils \
+    tshark \
   && setcap cap_net_raw,cap_net_admin+eip $(which dumpcap) \
   && tshark --version | head -1
 
 WORKDIR /app
 
-# Dependencies
 COPY server/package.json ./
 RUN npm install --production
 
-# Application
 COPY server/server.js ./
 COPY web/ ./web/
 
-# Verify
-RUN node -e "console.log('server.js OK')" && ls -la /app/
+RUN node --check server.js && echo "server.js OK" && ls -la /app/
 
 EXPOSE 80
 EXPOSE 4729/udp
