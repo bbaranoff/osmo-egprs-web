@@ -3,7 +3,17 @@ const os = require('os');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, exec } = require('child_process');
+
+// Promesse autour de exec() — ne bloque jamais l'event loop
+function execAsync(cmd, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { timeout: timeoutMs, encoding: 'utf-8' }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve((stdout || '').trim());
+    });
+  });
+}
 const { WebSocketServer, WebSocket } = require('ws');
 
 // ─── Config ──────────────────────────────────────────────────
@@ -44,12 +54,11 @@ let packetIdGlobal = 0;
 let tsharkActiveClients = 0;
 
 // ─── Docker Discovery ────────────────────────────────────────
-function discoverOperators() {
+async function discoverOperators() {
   try {
-    const raw = execSync(
-      `docker ps --filter "name=${PREFIX}" --format "{{.Names}}"`,
-      { timeout: 5000, encoding: 'utf-8' }
-    ).trim();
+    const raw = await execAsync(
+      `docker ps --filter "name=${PREFIX}" --format "{{.Names}}"`, 5000
+    );
     if (!raw) return [];
     return [...new Set(
       raw.split('\n')
@@ -101,10 +110,9 @@ async function pollOperator(id) {
   const op = operators[id] || { id, online: false, components: {}, mobiles: [] };
 
   try {
-    const running = execSync(
-      `docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null`,
-      { timeout: 3000, encoding: 'utf-8' }
-    ).trim();
+    const running = await execAsync(
+      `docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null`, 3000
+    );
     if (running !== 'true') { op.online = false; operators[id] = op; return; }
   } catch { op.online = false; operators[id] = op; return; }
 
@@ -141,33 +149,39 @@ async function pollOperator(id) {
   } catch (e) { dbg(`Poll MSC op${id}:`, e.message); }
 
   try {
-    const raw = execSync(
-      `docker exec ${container} bash -c "ss -tlnp 2>/dev/null | grep :7890 | wc -l"`,
-      { timeout: 3000, encoding: 'utf-8' }
-    ).trim();
+    const raw = await execAsync(
+      `docker exec ${container} bash -c "ss -tlnp 2>/dev/null | grep :7890 | wc -l"`, 3000
+    );
     op.smsRelayUp = parseInt(raw) > 0;
   } catch { op.smsRelayUp = false; }
 
   operators[id] = op;
 }
 
+let pollLock = false;
 async function pollAll() {
-  activeOpIds = discoverOperators();
-  for (const id of Object.keys(operators).map(Number)) {
-    if (!activeOpIds.includes(id)) delete operators[id];
-  }
-  await Promise.allSettled(activeOpIds.map(id => pollOperator(id)));
-
-  const stateMsg = JSON.stringify({
-    type: 'state',
-    data: { operators, activeOpIds },
-    ts: Date.now()
-  });
-
-  for (const client of clients) {
-    if (client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(stateMsg);
+  if (pollLock) { dbg('pollAll skipped: previous poll still running'); return; }
+  pollLock = true;
+  try {
+    activeOpIds = await discoverOperators();
+    for (const id of Object.keys(operators).map(Number)) {
+      if (!activeOpIds.includes(id)) delete operators[id];
     }
+    await Promise.allSettled(activeOpIds.map(id => pollOperator(id)));
+
+    const stateMsg = JSON.stringify({
+      type: 'state',
+      data: { operators, activeOpIds },
+      ts: Date.now()
+    });
+
+    for (const client of clients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(stateMsg);
+      }
+    }
+  } finally {
+    pollLock = false;
   }
 }
 
@@ -319,22 +333,24 @@ class VtySessionManager {
 }
 
 // ─── tshark Capture ──────────────────────────────────────────
-// Deux processus synchronisés par numéro de trame (robuste vs shift()).
-//   proc    : tshark texte  → champ info tel que tshark le formate
-//   ekProc  : tshark -T ek  → arfcn, chan_type, uplink, hex dump
-// Le texte arrive en premier ; on stocke les EK dans ekMap[frameNum]
-// et on fusionne dès que les deux sont disponibles.
+// Un seul processus tshark -T fields.
+// _ws.col.Info → Info Wireshark exacte, sans reconstruction manuelle.
+// Hex dump chargé on-demand via packet_hex_request / packet_hex.
+//
+// Colonnes (séparateur \t, occurrence=f) :
+//   0 frame.number   1 frame.time_epoch  2 ip.src       3 ip.dst
+//   4 frame.len      5 _ws.col.Protocol  6 _ws.col.Info
+//   7 gsmtap.arfcn   8 gsmtap.uplink     9 gsmtap.chan_type
+//  10 gsmtap.timeslot 11 gsmtap.frame_nr
+//  12 sctp.srcport   13 sctp.dstport    14 frame.protocols
 class TsharkSession {
   constructor(ws, clientId) {
     this.ws       = ws;
     this.clientId = clientId;
     this.proc     = null;
-    this.ekProc   = null;
     this.running  = false;
-    this.txtBuf   = '';
-    this.ekBuf    = '';
-    this.ekMap    = new Map();   // frameNum → ek.layers
-    this.txtMap   = new Map();   // frameNum → parsed text pkt
+    this.buf      = '';
+    this.capIface = null;   // mémorisé pour le hex on-demand
   }
 
   start() {
@@ -344,249 +360,190 @@ class TsharkSession {
     const FILTER = `udp port ${GSMTAP_UDP} or sctp`;
     const DOCKER_GW_IP = process.env.DOCKER_GW_IP || '172.20.0.1';
     const ENV_CAP_IFACE = process.env.CAP_IFACE || '';
+
     function findIfaceByIp(ip) {
       const nets = os.networkInterfaces();
-
       for (const [iface, addrs] of Object.entries(nets)) {
         for (const addr of addrs || []) {
-          if (addr.family === 'IPv4' && addr.address === ip) {
-            return iface;
-          }
+          if (addr.family === 'IPv4' && addr.address === ip) return iface;
         }
       }
-
       return null;
     }
     function selectCaptureInterface() {
-      if (ENV_CAP_IFACE) {
-        log(`Capture interface forced by CAP_IFACE=${ENV_CAP_IFACE}`);
-        return ENV_CAP_IFACE;
-      }
-
+      if (ENV_CAP_IFACE) { log(`CAP_IFACE forcé: ${ENV_CAP_IFACE}`); return ENV_CAP_IFACE; }
       const gwIface = findIfaceByIp(DOCKER_GW_IP);
-      if (gwIface) {
-        log(`Capture interface auto-selected from Docker GW ${DOCKER_GW_IP}: ${gwIface}`);
-        return gwIface;
-      }
-
-      log(`Docker GW ${DOCKER_GW_IP} not found, fallback to 'any'`);
+      if (gwIface) { log(`Interface auto depuis GW ${DOCKER_GW_IP}: ${gwIface}`); return gwIface; }
+      log(`GW ${DOCKER_GW_IP} non trouvée, fallback 'any'`);
       return 'any';
     }
 
-    const CAP_IFACE = selectCaptureInterface();
-    // ── Process texte ────────────────────────────────────────
+    this.capIface = selectCaptureInterface();
+
     this.proc = spawn('tshark', [
-      '-i', CAP_IFACE,
+      '-i', this.capIface,
       '-p',
       '-f', FILTER,
-      '-l',
-      '-n',
+      // Force le dissecteur interne GSMTAP (GSM RR/DTAP) → Info correcte
+      '-d', `udp.port==${GSMTAP_UDP},gsmtap`,
+      '-T', 'fields',
+      '-E', 'header=n',
+      '-E', 'separator=\t',
+      '-E', 'occurrence=f',
+      '-E', 'quote=n',
+      '-e', 'frame.number',
+      '-e', 'frame.time_epoch',
+      '-e', 'ip.src',
+      '-e', 'ip.dst',
+      '-e', 'frame.len',
+      '-e', '_ws.col.Protocol',
+      '-e', '_ws.col.Info',
+      '-e', 'gsmtap.arfcn',
+      '-e', 'gsmtap.uplink',
+      '-e', 'gsmtap.chan_type',
+      '-e', 'gsmtap.ts',
+      '-e', 'gsmtap.frame_nr',
+      '-e', 'sctp.srcport',
+      '-e', 'sctp.dstport',
+      '-e', 'frame.protocols',
+      '-l', '-n',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    this.ekProc = spawn('tshark', [
-      '-i', CAP_IFACE,
-      '-p',
-      '-f', FILTER,
-      '-T', 'ek',
-      '-l',
-      '-n',
-      '-x',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.running = true;
-    this.txtBuf = '';
-    this.ekBuf  = '';
+    this.buf = '';
+    // Dedup : clé (src|dst|len|ts_100ms) dans une fenêtre glissante de 300 ms
+    this.dedupSet = new Map();  // clé → timestamp d'expiration
 
-    // ── Texte → parseTextLine → txtMap → tryMerge ────────────
     this.proc.stdout.on('data', chunk => {
-      this.txtBuf += chunk.toString();
+      this.buf += chunk.toString();
       let nl;
-      while ((nl = this.txtBuf.indexOf('\n')) !== -1) {
-        const line = this.txtBuf.substring(0, nl).trim();
-        this.txtBuf = this.txtBuf.substring(nl + 1);
-        if (!line) continue;
-        dbg(`TXT RAW: ${line}`);
-        const parsed = this.parseTextLine(line);
-        if (parsed) {
-          dbg(`TXT PARSED #${parsed.frameNum}: ${parsed.info}`);
-          this.txtMap.set(parsed.frameNum, parsed);
-          this.tryMerge(parsed.frameNum);
-        }
+      while ((nl = this.buf.indexOf('\n')) !== -1) {
+        const line = this.buf.substring(0, nl);
+        this.buf = this.buf.substring(nl + 1);
+        if (!line.trim()) continue;
+        dbg(`FIELDS: ${line}`);
+        const pkt = this.parseLine(line);
+        if (pkt) this.sendToClient('packet', pkt);
       }
     });
 
     this.proc.stderr.on('data', d => {
       const msg = d.toString().trim();
-      if (msg) log(`tshark text stderr [${this.clientId}]: ${msg}`);
+      if (msg) log(`tshark stderr [${this.clientId}]: ${msg}`);
     });
 
     this.proc.on('close', code => {
-      log(`tshark text [${this.clientId}] stopped (code ${code})`);
+      log(`tshark [${this.clientId}] stopped (code ${code})`);
       if (this.running) { this.running = false; tsharkActiveClients--; broadcastTsharkStatus(); }
       this.sendToClient('tshark_stopped', { code });
     });
 
     this.proc.on('error', err => {
-      log(`tshark text [${this.clientId}] error: ${err.message}`);
+      log(`tshark [${this.clientId}] error: ${err.message}`);
       if (this.running) { this.running = false; tsharkActiveClients--; broadcastTsharkStatus(); }
       this.sendToClient('tshark_error', { msg: err.message });
     });
-
-    // ── EK → ekMap → tryMerge ────────────────────────────────
-    this.ekProc.stdout.on('data', chunk => {
-      this.ekBuf += chunk.toString();
-      let nl;
-      while ((nl = this.ekBuf.indexOf('\n')) !== -1) {
-        const line = this.ekBuf.substring(0, nl).trim();
-        this.ekBuf = this.ekBuf.substring(nl + 1);
-        if (!line || line.startsWith('{"index"')) continue;
-        try {
-          const ek = JSON.parse(line);
-          if (!ek.layers) continue;
-          const fnRaw = ek.layers.frame && ek.layers.frame.frame_frame_number;
-          const frameNum = Array.isArray(fnRaw) ? parseInt(fnRaw[0]) : parseInt(fnRaw);
-          if (!frameNum) continue;
-          this.ekMap.set(frameNum, ek.layers);
-          this.tryMerge(frameNum);
-        } catch {}
-      }
-    });
-
-    this.ekProc.stderr.on('data', d => { const m = d.toString().trim(); if (m) log(`tshark ek stderr: ${m}`); });
-    this.ekProc.on('close', code => { log(`tshark ek closed (code ${code})`); });
-    this.ekProc.on('error', err => { log(`tshark ek error: ${err.message}`); });
 
     tsharkActiveClients++;
     broadcastTsharkStatus();
   }
 
-  // Fusionne texte + EK dès que les deux sont présents pour frameNum.
-  // Si EK n'arrive pas dans un délai raisonnable, envoie quand même le texte seul.
-  tryMerge(frameNum) {
-    const txt = this.txtMap.get(frameNum);
-    const ek  = this.ekMap.get(frameNum);
-    if (!txt) return;
-
-    if (ek) {
-      this.txtMap.delete(frameNum);
-      this.ekMap.delete(frameNum);
-      const pkt = this.buildPacket(txt, ek);
-      if (pkt) this.sendToClient('packet', pkt);
-    } else {
-      // Fallback : envoyer le texte seul après 500 ms si EK absent
-      setTimeout(() => {
-        if (!this.txtMap.has(frameNum)) return; // déjà mergé
-        this.txtMap.delete(frameNum);
-        const pkt = this.buildPacket(txt, null);
-        if (pkt) this.sendToClient('packet', pkt);
-      }, 500);
-    }
-  }
-
   stop() {
-    if (this.proc)   { try { this.proc.kill('SIGTERM'); }   catch {} this.proc   = null; }
-    if (this.ekProc) { try { this.ekProc.kill('SIGTERM'); } catch {} this.ekProc = null; }
+    if (this.proc) {
+      // SIGINT arrête tshark proprement (flush + stats) ; SIGTERM en fallback
+      try { this.proc.kill('SIGINT'); } catch {}
+      setTimeout(() => { try { this.proc && this.proc.kill('SIGTERM'); } catch {} }, 500);
+      this.proc = null;
+    }
     if (this.running) {
       this.running = false;
+      if (tsharkActiveClients > 0) tsharkActiveClients--;
       log(`tshark client ${this.clientId} stopped`);
-      tsharkActiveClients--;
       broadcastTsharkStatus();
     }
   }
 
-  // Parse une ligne texte tshark :
-  //   "  42 1.234567 172.20.0.12 → 172.20.0.1 GSMTAP 83 (BCCH) System Information Type 3"
-  parseTextLine(line) {
-    const m = line.match(/^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(?:→|->)\s+(\S+)\s+(\S+)\s+(\d+)\s*(.*)/);
-    if (!m) return null;
-    const info = m[7].trim() || m[5];
+  // Chargement on-demand du hex dump pour un numéro de trame précis
+  fetchHex(frameNum) {
+    if (!this.capIface) return;
+    const FILTER = `udp port ${GSMTAP_UDP} or sctp`;
+    execAsync(
+      `tshark -i ${this.capIface} -p -f "${FILTER}" -T fields ` +
+      `-E header=n -E separator=\\t -E occurrence=f -E quote=n ` +
+      `-e frame.number -e data.data -c ${frameNum + 200} -n 2>/dev/null | ` +
+      `awk -F'\\t' '$1=="${frameNum}" {print $2; exit}'`,
+      8000
+    ).then(hex => {
+      if (hex) this.sendToClient('packet_hex', { frameNum, hex });
+    }).catch(() => {});
+  }
+
+  parseLine(line) {
+    const f = line.split('\t');
+    if (f.length < 7) return null;
+
+    const proto  = (f[5] || '').toUpperCase();
+    const info   = (f[6] || '').trim();
+    const protos = f[14] || '';
+
+    const isGsmtap = protos.includes('gsmtap');
+    const isSctp   = protos.includes('sctp') || protos.includes('m3ua');
+
+    if (!isGsmtap && !isSctp) return null;
+
     // Blacklist bruit TRX/clock
     const BLACKLIST = ['TRX Clock Ind', 'clock jitter', 'GSM clock', 'elapsed_fn'];
     if (BLACKLIST.some(s => info.includes(s))) return null;
-    packetIdGlobal++;
-    return {
-      id: packetIdGlobal,
-      frameNum: parseInt(m[1]),
-      ts: parseFloat(m[2]),
-      src: m[3], dst: m[4],
-      protocol: m[5],
-      length: parseInt(m[6]),
-      info,
-    };
-  }
 
-  // Construit le paquet final : info du texte, métadonnées GSMTAP/SCTP de l'EK.
-  buildPacket(txt, layers) {
+    // ── Dedup : même paquet visible sur veth + bridge ─────────
+    const now = Date.now();
+    const tsMs = Math.round(parseFloat(f[1]) * 1000);
+    const dedupKey = `${f[2]}|${f[3]}|${f[4]}|${Math.round(tsMs / 100)}`;
+    // Purger les entrées expirées (>300 ms)
+    for (const [k, exp] of this.dedupSet) { if (now > exp) this.dedupSet.delete(k); }
+    if (this.dedupSet.has(dedupKey)) return null;   // doublon réseau → skip
+    this.dedupSet.set(dedupKey, now + 300);
+    // ──────────────────────────────────────────────────────────
+
+    const src = f[2] || '';
+    const dst = f[3] || '';
+
     const pkt = {
-      id: txt.id, ts: txt.ts,
-      src: txt.src, dst: txt.dst,
-      protocol: txt.protocol, length: txt.length,
-      info: txt.info,           // ← directement de tshark
-      arfcn: '', uplink: false,
-      channel: '', timeslot: '', fn: '',
-      layers: layers || null,
-      hexDump: null,
-      opLabel: '—', direction: '',
+      id:        ++packetIdGlobal,
+      frameNum:  parseInt(f[0]) || 0,
+      ts:        parseFloat(f[1]) || 0,
+      src, dst,
+      protocol:  f[5] || '',
+      length:    parseInt(f[4]) || 0,
+      info,
+      arfcn: '', uplink: false, channel: '', timeslot: '', fn: '',
+      hexDump: null, opLabel: '—', direction: '',
     };
 
-    let hasGsmtap = false, hasSctp = false;
-
-    if (layers) {
-      // Hex dump
-      const fr = layers.frame;
-      if (fr && fr.frame_frame_raw) {
-        const r = fr.frame_frame_raw;
-        pkt.hexDump = Array.isArray(r) ? r[0] : r;
-      }
-
-      // GSMTAP
-      if (layers.gsmtap_log) return null; // bruit log OsmoBSC
-      const gt = layers.gsmtap;
-      if (gt) {
-        hasGsmtap    = true;
-        pkt.arfcn    = this.getField(gt, 'gsmtap_gsmtap_arfcn');
-        pkt.uplink   = this.getField(gt, 'gsmtap_gsmtap_uplink') === '1';
-        pkt.channel  = this.getField(gt, 'gsmtap_gsmtap_chan_type');
-        pkt.timeslot = this.getField(gt, 'gsmtap_gsmtap_timeslot');
-        pkt.fn       = this.getField(gt, 'gsmtap_gsmtap_frame_nr');
-        pkt.direction = pkt.uplink ? 'UL' : 'DL';
-        const arfcn = parseInt(pkt.arfcn);
-        const opNum = Math.floor((arfcn - 514) / 2) + 1;
-        pkt.opLabel = (opNum >= 1 && opNum <= 24) ? `OP${opNum}` : `A${arfcn}`;
-      }
-      if (layers.gsm_trx) return null;
-
-      // SCTP / M3UA
-      const sctp = layers.sctp;
-      if (sctp) {
-        hasSctp = true;
-        pkt.protocol = layers.m3ua ? 'M3UA' : 'SCTP';
-        const sp = this.getField(sctp, 'sctp_sctp_srcport');
-        const dp = this.getField(sctp, 'sctp_sctp_dstport');
-        pkt.sctpPorts = `${sp} → ${dp}`;
-        const ipToOp = ip => {
-          const mm = ip && ip.match(/^172\.20\.0\.(\d+)$/);
-          if (mm) { const n = parseInt(mm[1]); if (n >= 11) return `OP${n - 10}`; }
-          return '';
-        };
-        const sOp = ipToOp(txt.src), dOp = ipToOp(txt.dst);
-        if (sOp && dOp) { pkt.opLabel = `${sOp}/${dOp}`; pkt.direction = `${sOp}→${dOp}`; }
-        else if (sOp)   { pkt.opLabel = sOp; pkt.direction = 'UL'; }
-        else if (dOp)   { pkt.opLabel = dOp; pkt.direction = 'DL'; }
-      }
-    } else {
-      // Pas d'EK : déduire depuis le texte
-      hasGsmtap = txt.protocol.toUpperCase().includes('GSMTAP');
-      hasSctp   = txt.protocol.toUpperCase().includes('SCTP') || txt.protocol.toUpperCase().includes('M3UA');
+    if (isGsmtap) {
+      pkt.arfcn    = f[7]  || '';
+      pkt.uplink   = f[8]  === '1';
+      pkt.channel  = GSMTAP_CHAN[f[9]] || f[9] || '';
+      pkt.timeslot = f[10] || '';
+      pkt.fn       = f[11] || '';
+      pkt.direction = pkt.uplink ? 'UL' : 'DL';
+      const arfcn  = parseInt(pkt.arfcn);
+      const opNum  = Math.floor((arfcn - 514) / 2) + 1;
+      pkt.opLabel  = (opNum >= 1 && opNum <= 24) ? `OP${opNum}` : `A${arfcn}`;
+    } else if (isSctp) {
+      pkt.sctpPorts = `${f[12]} → ${f[13]}`;
+      const ipToOp = ip => {
+        const mm = ip && ip.match(/^172\.20\.0\.(\d+)$/);
+        if (mm) { const n = parseInt(mm[1]); if (n >= 11) return `OP${n - 10}`; }
+        return '';
+      };
+      const sOp = ipToOp(src), dOp = ipToOp(dst);
+      if (sOp && dOp) { pkt.opLabel = `${sOp}/${dOp}`; pkt.direction = `${sOp}→${dOp}`; }
+      else if (sOp)   { pkt.opLabel = sOp; pkt.direction = 'UL'; }
+      else if (dOp)   { pkt.opLabel = dOp; pkt.direction = 'DL'; }
     }
 
-    if (!hasGsmtap && !hasSctp) return null;
     return pkt;
-  }
-
-  getField(layer, field) {
-    if (!layer) return '';
-    const v = layer[field];
-    return Array.isArray(v) ? v[0] || '' : v || '';
   }
 
   sendToClient(type, data) {
@@ -595,7 +552,6 @@ class TsharkSession {
     }
   }
 }
-
 function broadcastTsharkStatus() {
   const statusMsg = JSON.stringify({
     type: 'tshark_status',
@@ -642,25 +598,16 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (req.url === '/api/debug-ek') {
-    // Capture un paquet GSMTAP en EK brut pour inspecter les noms de champs
-    const { execSync: ex } = require('child_process');
-    try {
-      const out = ex(
-        `tshark -i any -p -f "udp port ${GSMTAP_UDP}" -T ek -c 1 -n -l`,
-        { timeout: 12000, encoding: 'utf-8', shell: true }
-      ).trim();
-      // tshark -T ek émet une ligne {"index":...} puis une ligne {"layers":...}
-      const layersLine = out.split('\n').find(l => l.includes('"layers"'));
-      if (!layersLine) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'no packet captured', raw: out }));
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(layersLine);
-    } catch (e) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: e.message }));
-    }
+    // Capture un paquet GSMTAP en fields bruts pour inspecter les noms de champs
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    execAsync(
+      `tshark -i any -p -f "udp port ${GSMTAP_UDP}" -T fields -E header=y -E separator=\\t ` +
+      `-e frame.number -e _ws.col.Protocol -e _ws.col.Info ` +
+      `-e gsmtap.arfcn -e gsmtap.chan_type -e gsmtap.uplink ` +
+      `-c 1 -n -l 2>/dev/null`, 12000
+    ).then(out => res.end(JSON.stringify({ raw: out })))
+     .catch(e  => res.end(JSON.stringify({ error: e.message })));
+    return;
   }
 
 
@@ -711,6 +658,7 @@ wss.on('connection', (ws, req) => {
       case 'vty_disconnect': vtyMgr.disconnect(msg.key); break;
       case 'tshark_start':  tsharkSession.start(); break;
       case 'tshark_stop':   tsharkSession.stop(); break;
+      case 'packet_hex_request': tsharkSession.fetchHex(msg.frameNum); break;
       case 'poll':          pollAll(); break;
     }
   });
@@ -769,8 +717,8 @@ function ensureAudioDrain() {
 }
 
 // ─── Boot ────────────────────────────────────────────────────
-httpServer.listen(PORT, () => {
-  const ops = discoverOperators();
+httpServer.listen(PORT, async () => {
+  const ops = await discoverOperators();
   activeOpIds = ops;
   log(`osmo-egprs-web listening on :${PORT}`);
   ensureAudioDrain();

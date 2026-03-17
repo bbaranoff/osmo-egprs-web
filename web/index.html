@@ -395,6 +395,7 @@ const WS_URL = `ws://${location.hostname}:${location.port||80}`;
 let ws = null;
 let opState = {}, activeOpIds = [];
 let reconnectDelay = 1000;
+let captureRunning = false;   // état réel de la capture (piloté par tshark_status)
 
 function connectWs() {
   ws = new WebSocket(WS_URL);
@@ -418,21 +419,36 @@ function handle(msg) {
     case 'init':
       activeOpIds = msg.data.activeOpIds||[];
       updateOps(msg.data.operators);
-      setTsharkTag(msg.data.tsharkActive || false);
+      setCaptureRunning(msg.data.tsharkActive || false);
       break;
     case 'state':
       activeOpIds = msg.data.activeOpIds||activeOpIds;
       updateOps(msg.data.operators);
       break;
-    case 'tshark_status': setTsharkTag(msg.data.active); break;
+    case 'tshark_status':
+      setCaptureRunning(msg.data.active);
+      break;
     case 'packet': addPacket(msg.data); break;
-    case 'tshark_stopped': setTsharkTag(false); break;
-    case 'tshark_error': setTsharkTag(false); document.getElementById('tag-tshark').textContent='tshark ERR'; break;
+    case 'tshark_stopped':
+      setCaptureRunning(false);
+      break;
+    case 'tshark_error':
+      setCaptureRunning(false);
+      document.getElementById('tag-tshark').textContent='tshark ERR';
+      break;
+    case 'packet_hex':
+      onPacketHex(msg.data);
+      break;
     case 'vty_connected': vtyOnConnected(msg.data); break;
     case 'vty_data': vtyOnData(msg.data); break;
     case 'vty_error': vtyOnError(msg.data); break;
     case 'vty_disconnected': vtyOnDisc(msg.data); break;
   }
+}
+
+function setCaptureRunning(on) {
+  captureRunning = on;
+  setTsharkTag(on);
 }
 
 function setTsharkTag(on) {
@@ -509,7 +525,7 @@ function addPacket(p) {
   packets.push(p);
   if (packets.length > MAX_PKT) packets = packets.slice(-MAX_PKT/2);
   document.getElementById('pkt-counter').textContent = packets.length+' pkts';
-  setTsharkTag(true);
+  // Ne pas appeler setTsharkTag ici — piloté uniquement par tshark_status/tshark_stopped
   if (!matchFilter(p)) return;
   const tbody = document.getElementById('pkt-tbody');
   tbody.appendChild(makePktRow(p));
@@ -572,8 +588,18 @@ function renderDecode(p) {
 
 function renderHexDump(p) {
   const el = document.getElementById('pkt-hex');
-  if (!p.hexDump) { el.innerHTML = '<span style="color:var(--t3)">No hex data</span>'; return; }
-  const hex = p.hexDump.replace(/[^0-9a-fA-F]/g,'');
+  if (p.hexDump) {
+    _renderHex(el, p.hexDump);
+  } else if (p.frameNum) {
+    el.innerHTML = '<span style="color:var(--t3)">Chargement hex…</span>';
+    send({ type: 'packet_hex_request', frameNum: p.frameNum });
+  } else {
+    el.innerHTML = '<span style="color:var(--t3)">No hex data</span>';
+  }
+}
+
+function _renderHex(el, hexDump) {
+  const hex = hexDump.replace(/[^0-9a-fA-F]/g,'');
   const bytes = [];
   for (let i=0;i<hex.length;i+=2) bytes.push(parseInt(hex.substr(i,2),16));
   let html='';
@@ -588,6 +614,16 @@ function renderHexDump(p) {
     html+=`<div class="hex-line"><span class="hex-offset">${os}</span><span class="hex-bytes">${hp}</span><span class="hex-ascii">${ap}</span></div>`;
   }
   el.innerHTML=html;
+}
+
+function onPacketHex(data) {
+  // Stocker le hex dans le paquet correspondant
+  const p = packets.find(pk => pk.frameNum === data.frameNum);
+  if (p) p.hexDump = data.hex;
+  // Afficher si c'est le paquet courant en onglet hex
+  if (currentDetailPacket && currentDetailPacket.frameNum === data.frameNum && currentDetailTab === 'hex') {
+    _renderHex(document.getElementById('pkt-hex'), data.hex);
+  }
 }
 
 function renderRawJson(p) {
