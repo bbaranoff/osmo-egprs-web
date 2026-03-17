@@ -286,6 +286,21 @@
     font-family:'Fira Code',monospace; font-size:13px; padding:7px 0; outline:none;
   }
 
+  /* ═══ Packet Popup ═══ */
+  .pkt-popup { width:740px; height:500px; }
+  .detail-tabs-pop {
+    display:flex; background:var(--bg-2); border-bottom:1px solid var(--border); flex-shrink:0;
+  }
+  .detail-tabs-pop button {
+    background:none; border:none; border-bottom:2px solid transparent;
+    color:var(--t3); font-size:11px; font-weight:700; padding:7px 16px;
+    cursor:pointer; font-family:'Source Sans 3',sans-serif;
+    text-transform:uppercase; letter-spacing:.05em;
+  }
+  .detail-tabs-pop button.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+  .detail-tabs-pop button:hover  { color:var(--t1); }
+  .pkt-popup-body { flex:1; overflow-y:auto; min-height:0; }
+
   /* ═══ Responsive ═══ */
   @media (max-width:900px) {
     #main { grid-template-columns:1fr; }
@@ -439,6 +454,9 @@ function handle(msg) {
     case 'packet_hex':
       onPacketHex(msg.data);
       break;
+    case 'packet_dissect':
+      onPacketDissect(msg.data);
+      break;
     case 'vty_connected': vtyOnConnected(msg.data); break;
     case 'vty_data': vtyOnData(msg.data); break;
     case 'vty_error': vtyOnError(msg.data); break;
@@ -542,6 +560,7 @@ function makePktRow(p) {
     tr.classList.add('selected');
     selectPacket(p);
   };
+  tr.ondblclick = (e) => { e.stopPropagation(); spawnPktPopup(p); };
   const ts = typeof p.ts==='number' ? p.ts.toFixed(3) : '—';
   const pc = (p.protocol||'').toLowerCase();
   const cls = pc.includes('sctp')?'proto-sctp':pc.includes('m3ua')?'proto-m3ua':pc.includes('gsmtap')?'proto-gsmtap':pc.includes('rr')?'proto-rr':pc.includes('sms')?'proto-sms':pc.includes('dtap')?'proto-dtap':'proto-def';
@@ -555,7 +574,28 @@ function makePktRow(p) {
 function selectPacket(p) {
   currentDetailPacket = p;
   document.getElementById('detail-badge').textContent = '#'+p.id+' '+p.protocol;
+  // Si pas encore de layers, les demander au serveur
+  if (!p.layers && p.frameNum) {
+    send({ type: 'packet_dissect_request', frameNum: p.frameNum });
+  }
   renderDetailForTab(p);
+}
+
+function onPacketDissect(data) {
+  // Stocker les layers dans le paquet correspondant
+  const p = packets.find(function(pk){ return pk.frameNum === data.frameNum; });
+  if (p) p.layers = data.layers;
+  // Re-rendre si c'est le paquet courant en onglet decode
+  if (currentDetailPacket && currentDetailPacket.frameNum === data.frameNum) {
+    currentDetailPacket.layers = data.layers;
+    if (currentDetailTab === 'decode') renderDecode(currentDetailPacket);
+  }
+  // Re-rendre les popups ouverts sur ce paquet
+  document.querySelectorAll('[data-pkt-frame="' + data.frameNum + '"]').forEach(function(el) {
+    if (p) { p.layers = data.layers; }
+    var decodeEl = el.querySelector('.pkt-popup-decode');
+    if (decodeEl) renderDecodeInto({ layers: data.layers }, decodeEl);
+  });
 }
 
 function renderDetailForTab(p) {
@@ -566,22 +606,38 @@ function renderDetailForTab(p) {
 
 function renderDecode(p) {
   const el = document.getElementById('pkt-detail');
-  if (!p.layers) { el.innerHTML = '<span style="color:var(--t3)">No decode data (text-only packet)</span>'; return; }
+  if (!p.layers) {
+    el.innerHTML = '<span style="color:var(--t3)">Chargement dissection…</span>';
+    if (p.frameNum) send({ type:'packet_dissect_request', frameNum: p.frameNum });
+    return;
+  }
+  renderDecodeInto(p, el);
+}
+
+function renderDecodeInto(p, el) {
+  if (!p.layers || Object.keys(p.layers).length === 0) {
+    el.innerHTML = '<span style="color:var(--t3)">No decode data</span>';
+    return;
+  }
   let h = '';
   for (const [ln, fields] of Object.entries(p.layers)) {
     if (ln.endsWith('_raw')) continue;
-    h += `<div class="layer-group"><div class="layer-name" onclick="togLayer(this)"><span class="arrow">▶</span> ${esc(ln)}</div><div class="layer-fields">`;
-    if (typeof fields==='object'&&fields) {
-      for (const [k,v] of Object.entries(fields)) {
-        if (k.endsWith('_raw')||k.endsWith('_tree')) continue;
-        const val = Array.isArray(v)?v.join(', '):String(v);
-        const sk = k.replace(ln+'_','').replace(ln.replace('.','_')+'_','');
+    h += `<div class="layer-group"><div class="layer-name" onclick="togLayer(this)"><span class="arrow">&#9658;</span> ${esc(ln)}</div><div class="layer-fields">`;
+    if (typeof fields === 'object' && fields !== null) {
+      for (const [k, v] of Object.entries(fields)) {
+        if (k.endsWith('_raw') || k.endsWith('_tree')) continue;
+        const val = Array.isArray(v) ? v.join(', ') : String(v);
+        // Strip layer prefix — tshark JSON: "frame.time_epoch" sous layer "frame"
+        const lnEsc = ln.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const sk = k.replace(new RegExp('^' + lnEsc + '[._]'), '') || k;
         h += `<div class="field-row"><span class="field-key">${esc(sk)}</span>:<span class="field-val">${esc(val)}</span></div>`;
       }
+    } else if (fields !== null && fields !== undefined) {
+      h += `<div class="field-row"><span class="field-val">${esc(String(fields))}</span></div>`;
     }
     h += '</div></div>';
   }
-  el.innerHTML = h;
+  el.innerHTML = h || '<span style="color:var(--t3)">No fields</span>';
   const first = el.querySelector('.layer-name');
   if (first) togLayer(first);
 }
@@ -617,13 +673,17 @@ function _renderHex(el, hexDump) {
 }
 
 function onPacketHex(data) {
-  // Stocker le hex dans le paquet correspondant
   const p = packets.find(pk => pk.frameNum === data.frameNum);
   if (p) p.hexDump = data.hex;
-  // Afficher si c'est le paquet courant en onglet hex
+  // Panel bas
   if (currentDetailPacket && currentDetailPacket.frameNum === data.frameNum && currentDetailTab === 'hex') {
     _renderHex(document.getElementById('pkt-hex'), data.hex);
   }
+  // Popups en attente (dataset.frameNum posé lors de l'ouverture)
+  document.querySelectorAll('[data-frame-num="' + data.frameNum + '"]').forEach(el => {
+    _renderHex(el, data.hex);
+    delete el.dataset.frameNum;
+  });
 }
 
 function renderRawJson(p) {
@@ -653,6 +713,85 @@ function rebuildPktTable() {
   const tbody=document.getElementById('pkt-tbody');
   tbody.innerHTML='';
   packets.filter(matchFilter).slice(-800).forEach(p=>tbody.appendChild(makePktRow(p)));
+}
+
+// ═══ Packet Popup (double-clic) ═══
+let pktPopCounter = 0;
+
+function spawnPktPopup(p) {
+  pktPopCounter++;
+  const wid = 'pktpop-' + pktPopCounter;
+  const layer = document.getElementById('vty-layer');
+  const offset = (pktPopCounter - 1) * 32;
+  const top  = 90  + (offset % 180);
+  const left = 260 + (offset % 320);
+
+  const pc  = (p.protocol || '').toLowerCase();
+  const cls = pc.includes('sctp') ? 'proto-sctp' : pc.includes('m3ua') ? 'proto-m3ua' :
+              pc.includes('gsmtap') ? 'proto-gsmtap' : pc.includes('rr') ? 'proto-rr' :
+              pc.includes('sms') ? 'proto-sms' : pc.includes('dtap') ? 'proto-dtap' : 'proto-def';
+  const dir    = p.direction || (p.uplink ? 'UL' : 'DL');
+  const dirCol = dir === 'UL' ? 'var(--red)' : dir === 'DL' ? 'var(--green)' : 'var(--t2)';
+
+  const div = document.createElement('div');
+  div.className = 'vty-popup pkt-popup';
+  div.id = wid;
+  div.dataset.pktFrame = p.frameNum;
+  div.style.cssText = `top:${top}px;left:${left}px;z-index:210`;
+
+  div.innerHTML = `
+    <div class="vty-popup-header" onmousedown="startDrag(event,'${wid}')">
+      <span class="proto ${cls}" style="font-size:10px;flex-shrink:0">${esc(p.protocol||'—')}</span>
+      <span style="font-size:10px;color:${dirCol};font-weight:700;font-family:'Fira Code',monospace;flex-shrink:0;margin:0 4px">${esc(dir)}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:11px;font-family:'Fira Code',monospace;color:var(--cyan)">#${p.id} — ${esc((p.info||'').slice(0,80))}</span>
+      <span style="font-size:10px;color:var(--t3);font-family:'Fira Code',monospace;margin-right:6px">${esc(p.opLabel||'')}</span>
+      <button class="close-btn" onclick="document.getElementById('${wid}').remove()">✕</button>
+    </div>
+    <div class="detail-tabs-pop">
+      <button class="active" onclick="pktPopTab('${wid}','decode',this)">Decode</button>
+      <button onclick="pktPopTab('${wid}','hex',this)">Hex Dump</button>
+      <button onclick="pktPopTab('${wid}','raw',this)">Raw JSON</button>
+    </div>
+    <div id="${wid}-decode" class="pkt-popup-body pkt-popup-decode" style="padding:8px 10px;font-family:'Fira Code',monospace;font-size:11px;line-height:1.8">
+      <span style="color:var(--t3)">Chargement dissection…</span>
+    </div>
+    <div id="${wid}-hex" class="pkt-popup-body hex-dump" style="display:none"></div>
+    <div id="${wid}-raw" class="pkt-popup-body hex-dump" style="display:none"></div>`;
+
+  layer.appendChild(div);
+  document.querySelectorAll('.vty-popup').forEach(pp => pp.style.zIndex = 200);
+  div.style.zIndex = 210;
+
+  // Decode — utilise les layers déjà présents ou demande au serveur
+  const decodeEl = document.getElementById(wid + '-decode');
+  if (p.layers) {
+    renderDecodeInto(p, decodeEl);
+  } else if (p.frameNum) {
+    send({ type: 'packet_dissect_request', frameNum: p.frameNum });
+  }
+
+  // Hex
+  const hexEl = document.getElementById(wid + '-hex');
+  if (p.hexDump) {
+    _renderHex(hexEl, p.hexDump);
+  } else if (p.frameNum) {
+    hexEl.setAttribute('data-frame-num', p.frameNum);
+    send({ type: 'packet_hex_request', frameNum: p.frameNum });
+  }
+
+  // Raw JSON
+  const c = Object.assign({}, p); delete c.hexDump;
+  document.getElementById(wid + '-raw').textContent = JSON.stringify(c, null, 2);
+}
+
+function pktPopTab(wid, tab, btn) {
+  ['decode','hex','raw'].forEach(t => {
+    const el = document.getElementById(wid + '-' + t);
+    if (el) el.style.display = t === tab ? 'block' : 'none';
+  });
+  const tabsEl = document.querySelector('#' + wid + ' .detail-tabs-pop');
+  if (tabsEl) tabsEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
 }
 
 // ═══ VTY Popup Windows ═══
