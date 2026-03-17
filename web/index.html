@@ -178,6 +178,7 @@
   @keyframes pktFlash { 0%{background:rgba(133,153,0,0.1)} 100%{background:transparent} }
 
   .proto { display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px; font-weight:600; font-family:'Fira Code',monospace; }
+  .proto-gsm_sms{ background:rgba(133,153,0,0.18); color:var(--green); font-weight:700; }
   .proto-gsmtap { background:rgba(42,161,152,0.12); color:var(--cyan); }
   .proto-sctp   { background:rgba(108,113,196,0.12); color:var(--violet); }
   .proto-rr     { background:rgba(42,161,152,0.12); color:var(--cyan); }
@@ -190,7 +191,7 @@
 
   /* ═══ Packet detail ═══ */
   #pkt-detail-wrap {
-    height:220px; min-height:80px; max-height:60%;
+    height:340px; min-height:120px; max-height:70%;
     border-top:2px solid var(--border-b); background:var(--bg-1);
     flex-shrink:0; resize:vertical; display:flex; flex-direction:column; overflow:hidden;
   }
@@ -532,8 +533,8 @@ document.getElementById('cap-filter').addEventListener('input', e => {
 function matchFilter(p) {
   if (!filterText) return true;
   const f = filterText;
-  if (f==='ul') return p.direction==='UL' || p.uplink;
-  if (f==='dl') return p.direction==='DL' || !p.uplink;
+  if (f==='ul')  return p.direction==='UL' || p.uplink;
+  if (f==='dl')  return p.direction==='DL' || !p.uplink;
   const om = f.match(/^op\s*=?\s*(\d+)$/i);
   if (om) return (p.opLabel||'').toLowerCase().includes('op'+om[1]);
   return `${p.protocol} ${p.info} ${p.opLabel} ${p.direction} ${p.src} ${p.dst} ${p.arfcn}`.toLowerCase().includes(f);
@@ -563,7 +564,13 @@ function makePktRow(p) {
   tr.ondblclick = (e) => { e.stopPropagation(); spawnPktPopup(p); };
   const ts = typeof p.ts==='number' ? p.ts.toFixed(3) : '—';
   const pc = (p.protocol||'').toLowerCase();
-  const cls = pc.includes('sctp')?'proto-sctp':pc.includes('m3ua')?'proto-m3ua':pc.includes('gsmtap')?'proto-gsmtap':pc.includes('rr')?'proto-rr':pc.includes('sms')?'proto-sms':pc.includes('dtap')?'proto-dtap':'proto-def';
+  const cls = pc.includes('gsm_sms') ? 'proto-gsm_sms' :
+              pc.includes('sctp')    ? 'proto-sctp'    :
+              pc.includes('m3ua')    ? 'proto-m3ua'    :
+              pc.includes('gsmtap')  ? 'proto-gsmtap'  :
+              pc.includes('rr')      ? 'proto-rr'      :
+              pc.includes('sms')     ? 'proto-gsm_sms' :
+              pc.includes('dtap')    ? 'proto-dtap'    : 'proto-def';
   const dir = p.direction || (p.uplink ? 'UL' : 'DL');
   const dirCls = dir === 'UL' ? 'color:var(--red);font-weight:700' : dir === 'DL' ? 'color:var(--green);font-weight:700' : 'color:var(--t2)';
   const opLabel = p.opLabel || '—';
@@ -574,25 +581,25 @@ function makePktRow(p) {
 function selectPacket(p) {
   currentDetailPacket = p;
   document.getElementById('detail-badge').textContent = '#'+p.id+' '+p.protocol;
-  // Si pas encore de layers, les demander au serveur
-  if (!p.layers && p.frameNum) {
+  if (!p.layers && !p._pendingDissect && p.frameNum) {
+    p._pendingDissect = true;
     send({ type: 'packet_dissect_request', frameNum: p.frameNum });
   }
   renderDetailForTab(p);
 }
 
 function onPacketDissect(data) {
-  // Stocker les layers dans le paquet correspondant
   const p = packets.find(function(pk){ return pk.frameNum === data.frameNum; });
-  if (p) p.layers = data.layers;
-  // Re-rendre si c'est le paquet courant en onglet decode
+  if (p) {
+    p.layers = data.layers;
+    p._pendingDissect = false;
+  }
   if (currentDetailPacket && currentDetailPacket.frameNum === data.frameNum) {
     currentDetailPacket.layers = data.layers;
+    currentDetailPacket._pendingDissect = false;
     if (currentDetailTab === 'decode') renderDecode(currentDetailPacket);
   }
-  // Re-rendre les popups ouverts sur ce paquet
   document.querySelectorAll('[data-pkt-frame="' + data.frameNum + '"]').forEach(function(el) {
-    if (p) { p.layers = data.layers; }
     var decodeEl = el.querySelector('.pkt-popup-decode');
     if (decodeEl) renderDecodeInto({ layers: data.layers }, decodeEl);
   });
@@ -607,8 +614,7 @@ function renderDetailForTab(p) {
 function renderDecode(p) {
   const el = document.getElementById('pkt-detail');
   if (!p.layers) {
-    el.innerHTML = '<span style="color:var(--t3)">Chargement dissection…</span>';
-    if (p.frameNum) send({ type:'packet_dissect_request', frameNum: p.frameNum });
+    el.innerHTML = '<span style="color:var(--t3)">' + (p._pendingDissect ? 'Chargement dissection…' : 'No decode data') + '</span>';
     return;
   }
   renderDecodeInto(p, el);
@@ -619,19 +625,18 @@ function renderDecodeInto(p, el) {
     el.innerHTML = '<span style="color:var(--t3)">No decode data</span>';
     return;
   }
+  // Aplatir les couches : hisser les sous-protocoles trouvés dans les _tree
+  // (ex: gsm_sms niché dans gsm_a.rp_tree) au même niveau que les couches parentes
+  const flatLayers = flattenLayers(p.layers);
   let h = '';
-  for (const [ln, fields] of Object.entries(p.layers)) {
+  for (const [ln, fields] of flatLayers) {
     if (ln.endsWith('_raw')) continue;
-    h += `<div class="layer-group"><div class="layer-name" onclick="togLayer(this)"><span class="arrow">&#9658;</span> ${esc(ln)}</div><div class="layer-fields">`;
+    const lnEsc = ln.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    h += `<div class="layer-group">
+      <div class="layer-name" onclick="togLayer(this)"><span class="arrow">&#9658;</span> ${esc(ln)}</div>
+      <div class="layer-fields">`;
     if (typeof fields === 'object' && fields !== null) {
-      for (const [k, v] of Object.entries(fields)) {
-        if (k.endsWith('_raw') || k.endsWith('_tree')) continue;
-        const val = Array.isArray(v) ? v.join(', ') : String(v);
-        // Strip layer prefix — tshark JSON: "frame.time_epoch" sous layer "frame"
-        const lnEsc = ln.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const sk = k.replace(new RegExp('^' + lnEsc + '[._]'), '') || k;
-        h += `<div class="field-row"><span class="field-key">${esc(sk)}</span>:<span class="field-val">${esc(val)}</span></div>`;
-      }
+      h += renderFields(fields, lnEsc, 0);
     } else if (fields !== null && fields !== undefined) {
       h += `<div class="field-row"><span class="field-val">${esc(String(fields))}</span></div>`;
     }
@@ -640,6 +645,77 @@ function renderDecodeInto(p, el) {
   el.innerHTML = h || '<span style="color:var(--t3)">No fields</span>';
   const first = el.querySelector('.layer-name');
   if (first) togLayer(first);
+}
+
+// Les layers arrivent déjà ordonnés depuis le serveur (reorderLayers).
+// On aplatit juste les _tree résiduels pour récupérer les sous-protocoles
+// que -O n'aurait pas hissés (cas rares).
+function flattenLayers(layers) {
+  const result = [];
+  const seen   = new Set();
+  for (const [ln, fields] of Object.entries(layers)) {
+    if (ln.endsWith('_raw')) continue;
+    if (seen.has(ln)) continue;
+    seen.add(ln);
+    result.push([ln, fields]);
+  }
+  return result;
+}
+
+// indexLayerData n'est plus utilisé mais conservé pour compatibilité
+function indexLayerData(obj, map) {}
+
+// Rendu récursif des champs — gère les sous-objets imbriqués (SMS TPDU, GSM addresses…)
+function renderFields(obj, prefixEsc, depth) {
+  if (typeof obj !== 'object' || obj === null) return '';
+  let h = '';
+  const indent = depth > 0 ? `padding-left:${depth * 12}px` : '';
+
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.endsWith('_raw')) continue;
+
+    // Clés _tree : nœud organisationnel tshark → on récurse sans en-tête
+    if (k.endsWith('_tree')) {
+      if (typeof v === 'object' && v !== null) {
+        h += renderFields(v, '', depth);
+      }
+      continue;
+    }
+
+    // Nettoyer la clé : retirer le préfixe de layer
+    const sk = prefixEsc ? k.replace(new RegExp('^' + prefixEsc + '[._]'), '') || k : k;
+
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      // Sous-objet avec contenu (ex: gsm_sms, gsm_a.rp_tree interne…)
+      const inner = renderFields(v, k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), depth + 1);
+      if (inner) {
+        const uid = 'sf_' + Math.random().toString(36).substr(2, 6);
+        h += `<div class="field-row" style="${indent}">
+          <span class="field-key" style="cursor:pointer;color:var(--blue)"
+            onclick="var d=document.getElementById('${uid}');var open=d.style.display!=='none';d.style.display=open?'none':'block';this.firstChild.textContent=open?'▶':'▼';">
+            <span>▼</span> ${esc(sk)}</span>
+          <div id="${uid}" style="display:block">${inner}</div>
+        </div>`;
+      }
+    } else if (Array.isArray(v)) {
+      const hasObj = v.some(i => typeof i === 'object' && i !== null);
+      if (hasObj) {
+        h += `<div class="field-row" style="${indent}"><span class="field-key">${esc(sk)}</span>:`;
+        v.forEach(item => {
+          if (typeof item === 'object' && item !== null)
+            h += `<div style="padding-left:${(depth+1)*12}px">${renderFields(item, '', depth+1)}</div>`;
+          else
+            h += `<span class="field-val" style="margin-left:4px">${esc(String(item))}</span>`;
+        });
+        h += '</div>';
+      } else {
+        h += `<div class="field-row" style="${indent}"><span class="field-key">${esc(sk)}</span>:<span class="field-val">${esc(v.join(', '))}</span></div>`;
+      }
+    } else {
+      h += `<div class="field-row" style="${indent}"><span class="field-key">${esc(sk)}</span>:<span class="field-val">${esc(String(v))}</span></div>`;
+    }
+  }
+  return h;
 }
 
 function renderHexDump(p) {
@@ -762,11 +838,12 @@ function spawnPktPopup(p) {
   document.querySelectorAll('.vty-popup').forEach(pp => pp.style.zIndex = 200);
   div.style.zIndex = 210;
 
-  // Decode — utilise les layers déjà présents ou demande au serveur
+  // Decode — utilise les layers déjà présents ou demande au serveur (une seule fois)
   const decodeEl = document.getElementById(wid + '-decode');
   if (p.layers) {
     renderDecodeInto(p, decodeEl);
-  } else if (p.frameNum) {
+  } else if (p.frameNum && !p._pendingDissect) {
+    p._pendingDissect = true;
     send({ type: 'packet_dissect_request', frameNum: p.frameNum });
   }
 

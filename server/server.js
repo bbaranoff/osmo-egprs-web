@@ -410,13 +410,25 @@ TsharkSession.prototype.stop = function() {
 };
 
 // Hex dump on-demand depuis le pcap
+// Lit le pcap de façon sûre : copie dans un tmp avant de le lire
+// pour éviter les conflits avec tshark qui écrit en live.
+function safePcapRead(args, cb) {
+  if (!fs.existsSync(PCAP_PATH)) { cb(new Error('pcap absent'), ''); return; }
+  var tmp = PCAP_PATH + '.snap.' + Date.now();
+  exec('cp ' + PCAP_PATH + ' ' + tmp, function(cerr) {
+    if (cerr) { cb(cerr, ''); return; }
+    // Remplacer -r PCAP_PATH par -r tmp dans les args
+    var a = args.map(function(x) { return x === PCAP_PATH ? tmp : x; });
+    execFile('tshark', a, { maxBuffer: 4 * 1024 * 1024 }, function(err, stdout, stderr) {
+      fs.unlink(tmp, function() {});
+      cb(err, stdout || '', stderr || '');
+    });
+  });
+}
+
 TsharkSession.prototype.fetchHex = function(frameNum) {
   var self = this;
-  if (!fs.existsSync(PCAP_PATH)) {
-    self.sendToClient('packet_hex', { frameNum: frameNum, hex: '' });
-    return;
-  }
-  execFile('tshark', ['-r', PCAP_PATH, '-Y', 'frame.number == ' + frameNum, '-x'],
+  safePcapRead(['-r', PCAP_PATH, '-Y', 'frame.number == ' + frameNum, '-x'],
     function(err, stdout) {
       var hex = '';
       if (!err && stdout) {
@@ -430,33 +442,171 @@ TsharkSession.prototype.fetchHex = function(frameNum) {
   );
 };
 
-// Dissection complète on-demand depuis le pcap (-T json)
 TsharkSession.prototype.fetchDissect = function(frameNum) {
   var self = this;
   if (!fs.existsSync(PCAP_PATH)) {
+    log('[DISSECT] pcap absent:', PCAP_PATH);
     self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
     return;
   }
-  execFile('tshark', [
+  log('[DISSECT] frame ' + frameNum);
+  safePcapRead([
     '-r', PCAP_PATH,
     '-Y', 'frame.number == ' + frameNum,
     '-T', 'json',
+    '-2',          // two-pass analysis → dissection complète, gsm_sms exposé au premier niveau
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
     '-n',
-  ], function(err, stdout) {
-    if (err || !stdout) {
+  ], function(err, stdout, stderr) {
+    if (stderr && stderr.trim()) dbg('[DISSECT stderr]', stderr.trim());
+    if (err || !stdout || !stdout.trim()) {
+      log('[DISSECT] erreur:', err && err.message);
       self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
       return;
     }
-    try {
-      var arr = JSON.parse(stdout);
-      var layers = (arr && arr[0] && arr[0]._source && arr[0]._source.layers) ? arr[0]._source.layers : null;
-      self.sendToClient('packet_dissect', { frameNum: frameNum, layers: layers });
-    } catch(e) {
-      self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
-    }
+    self._parseDissect(frameNum, stdout);
   });
 };
+
+TsharkSession.prototype._parseDissect = function(frameNum, stdout) {
+  var self = this;
+  try {
+    var arr = JSON.parse(stdout);
+    if (!arr || !arr.length || !arr[0]._source) {
+      self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
+      return;
+    }
+    var raw = arr[0]._source.layers;
+    log('[DISSECT] frame ' + frameNum + ' keys:', Object.keys(raw).join(', '));
+
+    // Debug: dump gsm_a.rp pour comprendre la structure réelle
+    if (raw['gsm_a.rp']) {
+      log('[DISSECT] gsm_a.rp keys:', JSON.stringify(Object.keys(raw['gsm_a.rp'])));
+      // Chercher les _tree
+      Object.keys(raw['gsm_a.rp']).forEach(function(k) {
+        if (k.endsWith('_tree') && typeof raw['gsm_a.rp'][k] === 'object') {
+          log('[DISSECT] gsm_a.rp.' + k + ' keys:', JSON.stringify(Object.keys(raw['gsm_a.rp'][k])));
+        }
+      });
+    }
+
+    // Approche directe : scanner toutes les clés du JSON à plat
+    // et regrouper les champs par préfixe de protocole connu
+    var KNOWN_PROTOS = ['gsm_sms', 'rtp', 'rtcp', 'diameter', 'gtpv1', 'gtpv2', 'map', 'isup', 'sccp', 'm3ua'];
+    var found = flatScanProtos(raw, KNOWN_PROTOS);
+    Object.keys(found).forEach(function(proto) {
+      if (!raw[proto]) {
+        raw[proto] = found[proto];
+        log('[DISSECT] flatScan hoist:', proto, '(' + Object.keys(found[proto]).length + ' champs)');
+      }
+    });
+
+    log('[DISSECT] final keys:', Object.keys(raw).join(', '));
+    var layers = reorderLayers(raw);
+    self.sendToClient('packet_dissect', { frameNum: frameNum, layers: layers });
+  } catch(e) {
+    log('[DISSECT] parse error:', e.message);
+    self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
+  }
+};
+
+// Scan récursif à plat : trouve toutes les clés commençant par un proto connu
+// et les regroupe dans un objet {proto: {clé: valeur}}
+function flatScanProtos(obj, protos) {
+  var result = {};
+  function scan(o) {
+    if (typeof o !== 'object' || o === null || Array.isArray(o)) return;
+    Object.keys(o).forEach(function(k) {
+      var v = o[k];
+      // Vérifier si k correspond à un proto connu (k === proto ou k commence par proto + '.')
+      protos.forEach(function(proto) {
+        if (k === proto || k.startsWith(proto + '.') || k.startsWith(proto + '_')) {
+          if (!result[proto]) result[proto] = {};
+          result[proto][k] = v;
+        }
+      });
+      // Récurser
+      if (typeof v === 'object' && v !== null && !Array.isArray(v)) scan(v);
+    });
+  }
+  scan(obj);
+  return result;
+}
+
+// Réordonne : frame en premier, puis ordre de frame.protocols,
+// puis sous-protocoles extraits des _tree (gsm_sms, etc.), puis le reste.
+function reorderLayers(raw) {
+  if (!raw) return raw;
+  var frame     = raw['frame'] || {};
+  var protosStr = frame['frame.protocols'] || '';
+  var protoOrder = protosStr.split(':').filter(function(p) {
+    return p && p !== 'ethertype' && p !== 'llc';
+  });
+
+  var ordered = {};
+  var seen    = {};
+
+  // frame en premier
+  if (raw['frame']) { ordered['frame'] = raw['frame']; seen['frame'] = true; }
+
+  // Couches dans l'ordre de frame.protocols
+  protoOrder.forEach(function(proto) {
+    if (seen[proto] || raw[proto] === undefined) return;
+    ordered[proto] = raw[proto];
+    seen[proto] = true;
+  });
+
+  // Reste des couches de premier niveau (non couvertes par protocols)
+  Object.keys(raw).forEach(function(k) {
+    if (!seen[k]) { ordered[k] = raw[k]; seen[k] = true; }
+  });
+
+  // Hisser les sous-protocoles nichés dans les _tree
+  // ex: gsm_a.rp → gsm_a.rp_tree → gsm_sms
+  var hoisted = {};
+  hoistFromTrees(raw, hoisted, seen);
+  Object.keys(hoisted).forEach(function(k) {
+    ordered[k] = hoisted[k];
+  });
+
+  return ordered;
+}
+
+// Parcourt récursivement tous les _tree pour trouver des objets-protocoles
+// (objet dont toutes les clés partagent le même préfixe court, ex: "gsm_sms")
+function hoistFromTrees(obj, hoisted, seen) {
+  if (typeof obj !== 'object' || obj === null) return;
+  Object.keys(obj).forEach(function(k) {
+    var v = obj[k];
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return;
+
+    if (k.endsWith('_tree')) {
+      // Chercher des sous-protocoles directs dans ce _tree
+      Object.keys(v).forEach(function(sk) {
+        var sv = v[sk];
+        if (typeof sv !== 'object' || sv === null || Array.isArray(sv)) return;
+        if (sk.endsWith('_raw') || sk.endsWith('_tree')) return;
+        // C'est un sous-protocole si ses clés partagent le préfixe sk
+        var skPfx = sk.replace(/\./g, '_');
+        var subKeys = Object.keys(sv).filter(function(x){ return !x.endsWith('_raw'); });
+        if (subKeys.length === 0) return;
+        var looksLikeProto = subKeys.every(function(x) {
+          return x.startsWith(skPfx) || x.startsWith(sk) || x.endsWith('_tree');
+        });
+        if (looksLikeProto && !seen[sk]) {
+          seen[sk] = true;
+          hoisted[sk] = sv;
+          log('[HOIST]', sk, '(' + subKeys.length + ' champs)');
+        }
+      });
+      // Récurser dans le _tree
+      hoistFromTrees(v, hoisted, seen);
+    } else if (!k.endsWith('_raw')) {
+      // Récurser dans les sous-objets normaux
+      hoistFromTrees(v, hoisted, seen);
+    }
+  });
+}
 
 TsharkSession.prototype.parseLine = function(line) {
   var f = line.split('\t');
@@ -464,7 +614,12 @@ TsharkSession.prototype.parseLine = function(line) {
 
   var protos  = f[14] || '';
   var isGsmtap = protos.indexOf('gsmtap') >= 0;
-  var isSctp   = protos.indexOf('sctp') >= 0 || protos.indexOf('m3ua') >= 0;
+  var isGsmSms  = protos.indexOf('gsm_sms') >= 0 ||
+                  (protos.indexOf('gsm_a.rp') >= 0 && (f[6]||'').indexOf('(SMS)') >= 0) ||
+                  (f[6]||'').indexOf('SMS-DELIVER') >= 0 ||
+                  (f[6]||'').indexOf('SMS-SUBMIT') >= 0;
+  var isRpData  = protos.indexOf('gsm_a.rp') >= 0;
+  var isSctp    = protos.indexOf('sctp') >= 0 || protos.indexOf('m3ua') >= 0;
   if (!isGsmtap && !isSctp) return null;
 
   var info = (f[6] || '').trim();
@@ -482,16 +637,26 @@ TsharkSession.prototype.parseLine = function(line) {
 
   var src = f[2] || '';
   var dst = f[3] || '';
+
+  // Dériver le protocole affiché depuis frame.protocols plutôt que _ws.col.Protocol
+  // pour que "sms" dans le filtre UI matche bien les SMS
+  var displayProto = f[5] || '';
+  if      (isGsmSms)                           displayProto = 'GSM_SMS';
+  else if (isRpData && info.indexOf('RP-DATA') >= 0) displayProto = 'GSM_SMS';
+  else if (protos.indexOf('gsm_a.dtap') >= 0)  displayProto = 'DTAP';
+  else if (protos.indexOf('lapdm') >= 0)       displayProto = 'LAPDm';
+  else if (protos.indexOf('gsmtap') >= 0)      displayProto = 'GSMTAP';
+
   var pkt = {
     id:        ++packetIdGlobal,
     frameNum:  parseInt(f[0])  || 0,
     ts:        parseFloat(f[1]) || 0,
     src: src, dst: dst,
-    protocol:  f[5] || '',
+    protocol:  displayProto,
     length:    parseInt(f[4])  || 0,
     info:      info,
     arfcn: '', uplink: false, channel: '', timeslot: '', fn: '',
-    layers: null,   // chargé on-demand via packet_dissect_request
+    layers: null,
     opLabel: '—', direction: '',
   };
 
