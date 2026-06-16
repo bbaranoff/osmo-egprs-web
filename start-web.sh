@@ -40,6 +40,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -e CONTAINER_PREFIX="$PREFIX" \
   -e POLL_INTERVAL=4000 \
+  -e CAP_IFACE="${CAP_IFACE:-any}" \
   --restart unless-stopped \
   osmo-egprs-web
 

@@ -328,6 +328,8 @@
       <button class="btn" onclick="send({type:'poll'})">⟳ Refresh</button>
       <button class="btn" onclick="clearPackets()">Clear</button>
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
+      <button class="btn primary" id="audio-btn" onclick="toggleAudio()" title="Écouter l'audio des appels (gsm_audio)">▶ Audio</button>
+      <audio id="audio-stream" style="display:none"></audio>
       <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
       <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
     </div>
@@ -380,6 +382,20 @@
 
 <script>
 // ═══ Theme ═══
+var audioPlaying = false;
+function toggleAudio() {
+  var el = document.getElementById('audio-stream'), btn = document.getElementById('audio-btn');
+  if (!audioPlaying) {
+    el.src = '/audio?t=' + Date.now();           // flux MP3 chunké (serveur strip le ?query)
+    el.play().then(function(){ audioPlaying = true; btn.textContent = '⏸ Audio'; })
+      .catch(function(err){ console.error('audio play failed', err); el.removeAttribute('src'); el.load(); });
+  } else {
+    el.pause(); el.removeAttribute('src'); el.load();   // ferme la connexion -> refcount serveur
+    audioPlaying = false; btn.textContent = '▶ Audio';
+  }
+}
+(function(){ var el = document.getElementById('audio-stream'); if (!el) return;
+  el.addEventListener('error', function(){ if (audioPlaying){ audioPlaying=false; document.getElementById('audio-btn').textContent='▶ Audio'; } }); })();
 function toggleTheme() {
   const html = document.documentElement;
   const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -486,23 +502,25 @@ function updateOps(ops) {
   document.getElementById('tag-ops').className = 'htag'+(ids.length?' on':'');
 
   el.innerHTML = ids.map(id => {
-    const op = opState[id], bts = op.components?.bts||{}, mc = op.mobiles?.length||0;
+    const op = opState[id];
+    const btsList = (op.components?.btsList && op.components.btsList.length)
+                      ? op.components.btsList
+                      : (op.components?.bts && op.components.bts.ci!=null ? [op.components.bts] : []);
+    const mc = op.mobiles?.length||0;
     const smsClass = op.smsRelayUp ? 'up' : 'down';
+    const band = btsList[0]?.band || '';
     return `<div class="op-card on" onclick="this.classList.toggle('expanded')">
       <div class="op-head">
         <span class="id">OP${id}</span>
-        <span style="font-size:11px;color:var(--t2)">${bts.band||''}</span>
+        <span style="font-size:11px;color:var(--t2)">${band}</span>
         <span class="sms-dot ${smsClass}"></span>
-        <span class="ms">${mc} MS</span>
+        <span class="ms">${btsList.length} BTS · ${mc} MS</span>
       </div>
       <div class="op-detail">
-        <div class="op-row"><span>BSIC</span><span class="v">${bts.bsic??'—'}</span></div>
-        <div class="op-row"><span>LAC</span><span class="v">${bts.lac??'—'}</span></div>
-        <div class="op-row"><span>CI</span><span class="v">${bts.ci??'—'}</span></div>
-        <div class="op-row"><span>Type</span><span class="v">${bts.type||'—'}</span></div>
-        <div class="op-row"><span>TRX</span><span class="v">${bts.trx_count||'—'}</span></div>
+        ${btsList.length ? btsList.map(b=>`<div class="op-row"><span>BTS${b.nr} · ARFCN ${b.arfcn??'—'}</span><span class="v">CI ${b.ci??'—'} · BSIC ${b.bsic??'—'} · ${b.trx_count||'—'} TRX</span></div>`).join('') : '<div class="op-row"><span>BTS</span><span class="v">—</span></div>'}
+        <div class="op-row"><span>LAC</span><span class="v">${btsList[0]?.lac??'—'}</span></div>
         <div class="op-row"><span>SMS</span><span class="v" style="color:var(--${op.smsRelayUp?'green':'red'})">${op.smsRelayUp?'relay UP':'relay DOWN'}</span></div>
-        ${mc>0?'<div style="margin-top:4px">'+op.mobiles.map(m=>`<span class="ms-chip">${m.imsi.slice(0,5)}…${m.imsi.slice(12)}</span>`).join('')+'</div>':''}
+        ${mc>0?'<div style="margin-top:4px">'+op.mobiles.map(m=>`<span class="ms-chip">${m.imsi.slice(0,5)}…${m.imsi.slice(12)}</span>`).join('')+'</div>':'<div class="op-row"><span>MS</span><span class="v">—</span></div>'}
       </div>
     </div>`;
   }).join('');
@@ -898,7 +916,8 @@ function spawnVty() {
         <option value="bsc">BSC</option><option value="msc">MSC</option><option value="hlr">HLR</option>
         <option value="bts">BTS</option><option value="mgw">MGW</option><option value="stp">STP</option>
         <option value="sgsn">SGSN</option><option value="ggsn">GGSN</option><option value="pcu">PCU</option>
-        <option value="baseband">BB</option>
+        <option value="bb1">BB MS1 ☎ 4247</option>
+        <option value="bb2">BB MS2 ☎ 4248</option>
       </select>
       <button class="btn primary" style="padding:3px 10px;font-size:11px" onclick="vtyPopConnect('${wid}')">Go</button>
       <button class="close-btn" onclick="vtyPopClose('${wid}')">✕</button>
@@ -953,9 +972,10 @@ function vtyPopKey(e, wid) {
     e.preventDefault();
     if (w.histIdx<w.history.length-1) { w.histIdx++; input.value=w.history[w.histIdx]||''; }
     else { w.histIdx=w.history.length; input.value=''; }
-  } else if (e.key==='Tab') {
+  } else if (e.key==='Tab' || e.key==='?') {
+    // complétion osmocom : liste les options sans exécuter (serveur: '?' + Ctrl-U)
     e.preventDefault();
-    if (w.key) send({ type:'vty_exec', key:w.key, cmd:input.value+'?' });
+    if (w.key) send({ type:'vty_complete', key:w.key, partial:input.value });
   }
 }
 
