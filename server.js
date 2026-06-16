@@ -272,13 +272,13 @@ VtySession.prototype.write = function(cmd) {
 VtySession.prototype.writeRaw = function(s) {
   if (this.alive && this.proc && this.proc.stdin.writable) this.proc.stdin.write(s);
 };
-// Complétion VTY osmocom : '?' liste les options SANS exécuter ; on envoie le
-// partiel + '?' (sans newline), puis Ctrl-U (0x15) pour effacer la ligne côté
-// VTY (évite tout effet de bord / duplication au prochain Enter du client).
+// Complétion VTY osmocom : '?' liste les options. telnet (stdin = pipe) est en
+// mode LIGNE → il faut un newline pour flusher. osmocom traite le '?' char-par-char
+// (affiche la liste + redessine le partiel) ; le '\r\n' qui suit n'exécute que le
+// partiel (souvent incomplet → "% Command incomplete", inoffensif), et la ligne
+// VTY est remise à zéro → pas de duplication au prochain Enter du client.
 VtySession.prototype.complete = function(partial) {
-  var self = this;
-  this.writeRaw((partial || '') + '?');
-  setTimeout(function() { self.writeRaw('\x15'); }, 250);
+  this.write((partial || '') + '?');
 };
 VtySession.prototype.close = function() {
   if (this.proc) {
