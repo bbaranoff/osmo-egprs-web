@@ -23,7 +23,26 @@ const PREFIX     = process.env.CONTAINER_PREFIX || 'osmo-operator-';
 const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.indexOf('--verbose') >= 0;
 const PCAP_PATH  = process.env.PCAP_PATH || '/tmp/capture.pcap';
-const PULSE_SERVER  = process.env.PULSE_SERVER || 'unix:/var/run/pulse/native';
+// PulseAudio : en VM/ISO natif le serveur tourne souvent sous une session
+// utilisateur (/run/user/<uid>/pulse/native), pas en system-mode
+// (/var/run/pulse/native). On auto-détecte le 1er socket existant si
+// PULSE_SERVER n'est pas forcé.
+function detectPulseServer() {
+  if (process.env.PULSE_SERVER) return process.env.PULSE_SERVER;
+  var candidates = [];
+  try {
+    fs.readdirSync('/run/user').forEach(function(uid) {
+      candidates.push('/run/user/' + uid + '/pulse/native');
+    });
+  } catch (e) {}
+  candidates.push('/run/pulse/native');
+  candidates.push('/var/run/pulse/native');
+  for (var i = 0; i < candidates.length; i++) {
+    try { if (fs.existsSync(candidates[i])) return 'unix:' + candidates[i]; } catch (e) {}
+  }
+  return 'unix:/var/run/pulse/native';
+}
+const PULSE_SERVER  = detectPulseServer();
 const AUDIO_SOURCE  = process.env.AUDIO_SOURCE || 'gsm_audio.monitor';
 const AUDIO_BITRATE = process.env.AUDIO_BITRATE || '32k';
 
@@ -777,8 +796,10 @@ AudioBridge.prototype._start = function() {
   this.ffmpeg.stdout.on('data', function(chunk) {
     self.clients.forEach(function(res) { try { res.write(chunk); } catch (e) {} });
   });
-  this.parec.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) dbg('parec: ' + m); });
-  this.ffmpeg.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) dbg('ffmpeg: ' + m); });
+  // stderr visible au niveau log : sans ça l'échec PulseAudio (mauvais socket,
+  // source absente, cookie) est invisible hors mode --verbose.
+  this.parec.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) log('parec: ' + m); });
+  this.ffmpeg.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) log('ffmpeg: ' + m); });
   function onExit(who) { return function(code) {
     log('audio ' + who + ' exit (' + code + ')');
     if (self.running) { self.running = false; self._hardKill();
