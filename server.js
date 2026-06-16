@@ -361,6 +361,11 @@ TsharkSession.prototype.start = function() {
   if (ENV_CAP_IFACE) {
     this.capIface = ENV_CAP_IFACE;
     log('CAP_IFACE forcé: ' + ENV_CAP_IFACE);
+  } else if (NATIVE) {
+    // Mode VM/ISO natif : Osmocom émet le GSMTAP (127.0.0.1:4729) et le SCTP
+    // inter-composants (127.0.0.x) sur la loopback → on capture sur "lo".
+    this.capIface = 'lo';
+    log('Mode natif (VM/ISO) : capture sur loopback "lo"');
   } else {
     var gwIface = findIfaceByIp(DOCKER_GW_IP);
     if (gwIface) { this.capIface = gwIface; log('Interface auto depuis GW ' + DOCKER_GW_IP + ': ' + gwIface); }
