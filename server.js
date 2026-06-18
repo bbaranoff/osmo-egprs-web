@@ -364,7 +364,7 @@ TsharkSession.prototype.start = function() {
   } else {
     var gwIface = findIfaceByIp(DOCKER_GW_IP);
     if (gwIface) { this.capIface = gwIface; log('Interface auto depuis GW ' + DOCKER_GW_IP + ': ' + gwIface); }
-    else          { this.capIface = 'any';   log('GW ' + DOCKER_GW_IP + ' non trouvée, fallback "any"'); }
+    else          { this.capIface = 'lo';   log('GW ' + DOCKER_GW_IP + ' non trouvée, fallback "lo"'); }
   }
 
   var FILTER = 'udp port ' + GSMTAP_UDP + ' or sctp';
@@ -372,7 +372,7 @@ TsharkSession.prototype.start = function() {
     '-i', this.capIface,
   ];
   // -p (no promiscuous) seulement si ce n'est pas "any"
-  if (this.capIface !== 'any') args.push('-p');
+  if (this.capIface !== 'lo') args.push('-p');
   args = args.concat([
     '-f', FILTER,
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
