@@ -3,7 +3,7 @@ const os = require('os');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execFile } = require('child_process');
+const { spawn, exec, execFile, execFileSync } = require('child_process');
 
 function execAsync(cmd, timeoutMs) {
   timeoutMs = timeoutMs || 5000;
@@ -23,14 +23,39 @@ const PREFIX     = process.env.CONTAINER_PREFIX || 'osmo-operator-';
 const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.indexOf('--verbose') >= 0;
 const PCAP_PATH  = process.env.PCAP_PATH || '/tmp/capture.pcap';
+const PULSE_SERVER  = process.env.PULSE_SERVER || 'unix:/var/run/pulse/native';
+const AUDIO_SOURCE  = process.env.AUDIO_SOURCE || 'gsm_audio.monitor';
+const AUDIO_BITRATE = process.env.AUDIO_BITRATE || '32k';
 
 const VTY_PORTS = {
   bsc: 4242, msc: 4254, hlr: 4258, mgw: 4243, stp: 4239,
-  bts: 4241, ggsn: 4260, sgsn: 4245, pcu: 4240, baseband: 4247,
+  bts: 4241, ggsn: 4260, sgsn: 4245, pcu: 4240, bb1: 4247, bb2: 4248,
 };
 
 const VTY_RETRY_MAX   = 3;
 const VTY_RETRY_DELAY = 2000;
+
+// ─── Native (no-docker) mode ─────────────────────────────────
+const NATIVE        = (process.env.OSMO_NATIVE !== '0'); // natif par defaut (opt-out OSMO_NATIVE=0)
+const OP_IDS        = (process.env.OSMO_OP_IDS || '1').split(',')
+                        .map(function(s){ return parseInt(s, 10); })
+                        .filter(function(n){ return !isNaN(n); });
+const NETNS_PREFIX  = process.env.OSMO_NETNS_PREFIX || '';
+function vtyProc(container, port, ip, id) {
+  if (NATIVE) {
+    if (NETNS_PREFIX) return { bin: 'ip', args: ['netns','exec', NETNS_PREFIX + id, 'telnet', ip, String(port)] };
+    return { bin: 'telnet', args: [ip, String(port)] };
+  }
+  return { bin: 'docker', args: ['exec','-i', container, 'telnet', ip, String(port)] };
+}
+function shCmd(container, id, inner) {
+  if (NATIVE) {
+    if (NETNS_PREFIX) return 'ip netns exec ' + NETNS_PREFIX + id + ' bash -c "' + inner + '"';
+    return 'bash -c "' + inner + '"';
+  }
+  return 'docker exec ' + container + ' bash -c "' + inner + '"';
+}
+
 
 function log()  { var a = Array.prototype.slice.call(arguments); console.log.apply(console, ['[' + new Date().toISOString() + ']'].concat(a)); }
 function dbg()  { if (VERBOSE) { var a = Array.prototype.slice.call(arguments); console.log.apply(console, ['[DBG]'].concat(a)); } }
@@ -51,6 +76,7 @@ var clients           = new Set();
 
 // ─── Docker Discovery ────────────────────────────────────────
 function discoverOperators() {
+  if (NATIVE) return Promise.resolve(OP_IDS.slice());
   return execAsync(
     'docker ps --filter "name=' + PREFIX + '" --format "{{.Names}}"', 5000
   ).then(function(raw) {
@@ -76,9 +102,8 @@ function dockerExecVty(container, port, commands, ip) {
     var done = false;
     var timeout = setTimeout(function(){ finish(); }, 8000);
 
-    var proc = spawn('docker', [
-      'exec', '-i', container, 'telnet', targetIp, String(port)
-    ], { stdio: ['pipe','pipe','pipe'] });
+    var vc = vtyProc(container, port, targetIp, String(container).replace(PREFIX, ''));
+    var proc = spawn(vc.bin, vc.args, { stdio: ['pipe','pipe','pipe'] });
 
     proc.stdout.on('data', function(d) { output += d.toString(); });
     proc.stderr.on('data', function(d) { output += d.toString(); });
@@ -107,30 +132,35 @@ function pollOperator(id) {
   var container = PREFIX + id;
   var op = operators[id] || { id: id, online: false, components: {}, mobiles: [] };
 
-  return execAsync(
-    'docker inspect -f \'{{.State.Running}}\' ' + container + ' 2>/dev/null', 3000
-  ).then(function(running) {
+  var runningProbe = NATIVE
+    ? execAsync(shCmd(container, id, 'ss -tln 2>/dev/null | grep -q :' + VTY_PORTS.bsc + ' && echo true || echo false'), 3000)
+    : execAsync('docker inspect -f \'{{.State.Running}}\' ' + container + ' 2>/dev/null', 3000);
+  return runningProbe.then(function(running) {
     if (running !== 'true') { op.online = false; operators[id] = op; return; }
     op.online = true;
     op.lastPoll = Date.now();
 
     return Promise.allSettled([
       // BSC → BTS info
-      dockerExecVty(container, VTY_PORTS.bsc, ['enable', 'show bts 0']).then(function(raw) {
-        var bts = {};
+      dockerExecVty(container, VTY_PORTS.bsc, ['enable', 'show bts']).then(function(raw) {
+        // 'show bts' liste TOUTES les BTS (hybride : bts0 QEMU + bts1 faketrx).
+        var list = [];
+        var re = /BTS (\d+) is of ([\w-]+) type in band (\w+), has CI (\d+) LAC (\d+), BSIC (\d+)[^]*?and (\d+) TRX([^]*?)(?=BTS \d+ is of|$)/g;
         var m;
-        if ((m = raw.match(/CI\s+(\d+)/i)))       bts.ci        = parseInt(m[1], 10);
-        if ((m = raw.match(/LAC\s+(\d+)/i)))       bts.lac       = parseInt(m[1], 10);
-        if ((m = raw.match(/BSIC\s+(\d+)/i)))      bts.bsic      = parseInt(m[1], 10);
-        if ((m = raw.match(/band\s+(\w+)/i)))      bts.band      = m[1];
-        if ((m = raw.match(/type\s+([\w-]+)/i)))   bts.type      = m[1];
-        if ((m = raw.match(/(\d+)\s+TRX/i)))       bts.trx_count = parseInt(m[1], 10);
-        if ((m = raw.match(/ARFCN\s+(\d+)/i)))     bts.arfcn     = parseInt(m[1], 10);
-        op.components.bts = bts;
+        while ((m = re.exec(raw)) !== null) {
+          var arf = m[8].match(/ARFCNs?:\s*(\d+)/);
+          list.push({
+            nr: parseInt(m[1], 10), type: m[2], band: m[3],
+            ci: parseInt(m[4], 10), lac: parseInt(m[5], 10), bsic: parseInt(m[6], 10),
+            trx_count: parseInt(m[7], 10), arfcn: arf ? parseInt(arf[1], 10) : undefined,
+          });
+        }
+        op.components.btsList = list;
+        op.components.bts = list[0] || {};   // compat
       }).catch(function(e) { dbg('Poll BSC op' + id + ':', e.message); }),
 
       // MSC → subscribers
-      dockerExecVty(container, VTY_PORTS.msc, ['enable', 'show subscriber all']).then(function(raw) {
+      dockerExecVty(container, VTY_PORTS.msc, ['enable', 'show subscriber cache']).then(function(raw) {
         op.mobiles = [];
         raw.split('\n').forEach(function(line) {
           var mm = line.match(/(\d{15})/);
@@ -140,7 +170,7 @@ function pollOperator(id) {
 
       // SMS relay check
       execAsync(
-        'docker exec ' + container + ' bash -c "ss -tlnp 2>/dev/null | grep :7890 | wc -l"', 3000
+        shCmd(container, id, 'ss -tlnp 2>/dev/null | grep :7890 | wc -l'), 3000
       ).then(function(raw) {
         op.smsRelayUp = parseInt(raw) > 0;
       }).catch(function() { op.smsRelayUp = false; }),
@@ -191,11 +221,10 @@ function VtySession(ws, key, container, port, component, opId, ip) {
 }
 VtySession.prototype._connect = function() {
   var self = this;
-  log('VTY open: docker exec -i ' + this.container + ' telnet ' + this.ip + ' ' + this.port + ' (attempt ' + (this.retries + 1) + ')');
+  var vc = vtyProc(this.container, this.port, this.ip, this.opId);
+  log('VTY open: ' + vc.bin + ' ' + vc.args.join(' ') + ' (attempt ' + (this.retries + 1) + ')');
 
-  this.proc = spawn('docker', [
-    'exec', '-i', this.container, 'telnet', this.ip, String(this.port)
-  ], { stdio: ['pipe','pipe','pipe'] });
+  this.proc = spawn(vc.bin, vc.args, { stdio: ['pipe','pipe','pipe'] });
 
   this.alive = true;
   var gotData = false;
@@ -240,6 +269,17 @@ VtySession.prototype.write = function(cmd) {
   if (this.alive && this.proc && this.proc.stdin.writable)
     this.proc.stdin.write(cmd + '\r\n');
 };
+VtySession.prototype.writeRaw = function(s) {
+  if (this.alive && this.proc && this.proc.stdin.writable) this.proc.stdin.write(s);
+};
+// Complétion VTY osmocom : '?' liste les options. telnet (stdin = pipe) est en
+// mode LIGNE → il faut un newline pour flusher. osmocom traite le '?' char-par-char
+// (affiche la liste + redessine le partiel) ; le '\r\n' qui suit n'exécute que le
+// partiel (souvent incomplet → "% Command incomplete", inoffensif), et la ligne
+// VTY est remise à zéro → pas de duplication au prochain Enter du client.
+VtySession.prototype.complete = function(partial) {
+  this.write((partial || '') + '?');
+};
 VtySession.prototype.close = function() {
   if (this.proc) {
     try { this.proc.stdin.write('exit\r\n'); } catch(e) {}
@@ -268,6 +308,10 @@ VtySessionManager.prototype.exec = function(key, cmd) {
   var s = this.sessions[key];
   if (!s || !s.alive) { this._send('vty_error', { key: key, msg: 'Session not connected' }); return; }
   s.write(cmd);
+};
+VtySessionManager.prototype.complete = function(key, partial) {
+  var s = this.sessions[key];
+  if (s && s.alive) s.complete(partial);
 };
 VtySessionManager.prototype.disconnect = function(key) {
   var s = this.sessions[key];
@@ -705,6 +749,53 @@ function broadcastTsharkStatus() {
   });
 }
 
+// ─── Audio bridge : parec gsm_audio.monitor | ffmpeg mp3, flux PARTAGÉ (refcount) ──
+// gsm_audio.monitor = monitor du null-sink où gapk écrit TOUT l'audio des appels.
+// Un seul parec|ffmpeg pour tous les clients ; lazy-start au 1er GET /audio, kill à 0.
+function AudioBridge() { this.parec = null; this.ffmpeg = null; this.running = false; this.clients = new Set(); }
+AudioBridge.prototype._start = function() {
+  if (this.running) return;
+  log('audio bridge start (' + AUDIO_SOURCE + ' @ ' + PULSE_SERVER + ')');
+  this.running = true;
+  var self = this;
+  var env = Object.assign({}, process.env, { PULSE_SERVER: PULSE_SERVER });
+  this.parec = spawn('parec', ['-d', AUDIO_SOURCE, '--format=s16le', '--rate=8000', '--channels=1'],
+                     { env: env, stdio: ['ignore', 'pipe', 'pipe'] });
+  this.ffmpeg = spawn('ffmpeg', ['-nostdin', '-hide_banner', '-loglevel', 'error',
+                      '-f', 's16le', '-ar', '8000', '-ac', '1', '-i', 'pipe:0',
+                      '-c:a', 'libmp3lame', '-b:a', AUDIO_BITRATE, '-ar', '8000', '-ac', '1',
+                      '-fflags', '+nobuffer', '-flush_packets', '1', '-f', 'mp3', 'pipe:1'],
+                     { stdio: ['pipe', 'pipe', 'pipe'] });
+  this.parec.stdout.pipe(this.ffmpeg.stdin);
+  this.ffmpeg.stdin.on('error', function(e) { dbg('ffmpeg stdin: ' + e.message); });
+  this.parec.stdout.on('error', function(e) { dbg('parec stdout: ' + e.message); });
+  this.ffmpeg.stdout.on('data', function(chunk) {
+    self.clients.forEach(function(res) { try { res.write(chunk); } catch (e) {} });
+  });
+  this.parec.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) dbg('parec: ' + m); });
+  this.ffmpeg.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) dbg('ffmpeg: ' + m); });
+  function onExit(who) { return function(code) {
+    log('audio ' + who + ' exit (' + code + ')');
+    if (self.running) { self.running = false; self._hardKill();
+      if (self.clients.size > 0) setTimeout(function() { if (self.clients.size > 0) self._start(); }, 1000); }
+  }; }
+  this.parec.on('close', onExit('parec')); this.ffmpeg.on('close', onExit('ffmpeg'));
+  this.parec.on('error', function(e) { log('audio parec error: ' + e.message); });
+  this.ffmpeg.on('error', function(e) { log('audio ffmpeg error: ' + e.message); });
+};
+AudioBridge.prototype._hardKill = function() {
+  var procs = [this.parec, this.ffmpeg]; this.parec = null; this.ffmpeg = null;
+  procs.forEach(function(p) { if (!p) return; try { p.kill('SIGINT'); } catch (e) {}
+    setTimeout(function() { try { p.kill('SIGKILL'); } catch (e) {} }, 1000); });
+};
+AudioBridge.prototype._stop = function() { if (!this.running) return; log('audio bridge stop'); this.running = false; this._hardKill(); };
+AudioBridge.prototype.pipeToClient = function(res) {
+  var self = this; this.clients.add(res); if (!this.running) this._start();
+  function detach() { if (!self.clients.has(res)) return; self.clients.delete(res); if (self.clients.size === 0) self._stop(); }
+  res.on('close', detach); res.on('error', detach);
+};
+var audioBridge = new AudioBridge();
+
 // ─── HTTP Server ─────────────────────────────────────────────
 const MIME = {
   '.html':'text/html', '.js':'application/javascript', '.css':'text/css',
@@ -713,10 +804,183 @@ const MIME = {
 };
 const webDir = path.join(__dirname, 'web');
 
+// ─── FFT natif (Welch PSD) ───────────────────────────────────
+// Port direct de fft-web/fft_web.py en JS pur : lit les sources I/Q complex64
+// (cfile en tail, ou FIFO live O_RDWR|O_NONBLOCK), calcule la PSD Welch
+// (fenêtre Hanning, NSEG_MAX segments moyennés), et renvoie le même JSON que
+// l'ancien backend Python. Aucune dépendance externe — le dashboard sert les
+// deux spectres MS/BTS nativement dans son onglet « 📡 FFT ».
+const FFT_RATE     = parseFloat(process.env.RATE || '1083333');   // Fs natif = 26e6/24
+const FFT_NSAMP    = parseInt(process.env.NSAMP    || '262144', 10);
+const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit être une puissance de 2
+const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
+const FFT_MAXB     = FFT_NSAMP * 8;                                  // octets gardés (complex64 = 8 o/échantillon)
+const FFT_SRC = {
+  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.cfile)' },
+  bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
+};
+var fftState = {};                                                  // src -> { fd, buf:Buffer }
+
+// Logs adossés à chaque spectre (queue brute, ANSI conservé → colorisé côté web).
+// MS  : log du mobile osmocom (sous la FFT DSP).   BTS : log grgsm record (au-dessus de la FFT BTS).
+const FFT_LOG = {
+  ms:  process.env.FFT_LOG_MS  || '/var/log/osmocom/mobile-bts1.log',
+  bts: process.env.FFT_LOG_BTS || '/var/log/osmocom/record_drain.log',
+};
+const FFT_LOG_BYTES = parseInt(process.env.FFT_LOG_BYTES || '16384', 10);   // queue lue par requête
+
+// FFT itérative radix-2 (Cooley-Tukey), in-place sur re[]/im[] Float64Array.
+function makeFFT(n) {
+  var levels = Math.round(Math.log2(n));
+  if ((1 << levels) !== n) throw new Error('NFFT doit être une puissance de 2');
+  var rev = new Uint32Array(n);
+  for (var i = 0; i < n; i++) { var x = i, r = 0; for (var j = 0; j < levels; j++) { r = (r << 1) | (x & 1); x >>= 1; } rev[i] = r; }
+  var cos = new Float64Array(n >> 1), sin = new Float64Array(n >> 1);
+  for (var k = 0; k < (n >> 1); k++) { var a = -2 * Math.PI * k / n; cos[k] = Math.cos(a); sin[k] = Math.sin(a); }
+  return function(re, im) {
+    for (var i = 0; i < n; i++) { var r = rev[i]; if (r > i) { var t = re[i]; re[i] = re[r]; re[r] = t; t = im[i]; im[i] = im[r]; im[r] = t; } }
+    for (var len = 2; len <= n; len <<= 1) {
+      var half = len >> 1, step = (n / len) | 0;
+      for (var i2 = 0; i2 < n; i2 += len) {
+        for (var k2 = 0, tw = 0; k2 < half; k2++, tw += step) {
+          var wr = cos[tw], wi = sin[tw];
+          var ar = re[i2 + k2 + half], ai = im[i2 + k2 + half];
+          var br = ar * wr - ai * wi, bi = ar * wi + ai * wr;
+          re[i2 + k2 + half] = re[i2 + k2] - br; im[i2 + k2 + half] = im[i2 + k2] - bi;
+          re[i2 + k2] += br; im[i2 + k2] += bi;
+        }
+      }
+    }
+  };
+}
+const fftRun = makeFFT(FFT_NFFT);
+const fftHann = new Float64Array(FFT_NFFT);                         // np.hanning(M) = 0.5 - 0.5 cos(2πn/(M-1))
+for (let i = 0; i < FFT_NFFT; i++) fftHann[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (FFT_NFFT - 1));
+
+function fftIsFifo(p) {
+  try { return fs.statSync(p).isFIFO(); } catch (e) { return p.endsWith('.fifo'); }
+}
+
+// Vue Float32 alignée (re,im entrelacés) sur les `n` derniers octets d'un Buffer.
+function fftAlignedF32(buf, n) {
+  var a = new Uint8Array(n);
+  a.set(buf.subarray(buf.length - n));
+  return new Float32Array(a.buffer, 0, n >> 2);
+}
+
+function fftReadLive(src, p) {                                      // FIFO live, jamais d'EOF (O_RDWR), borné à MAXB
+  var st = fftState[src];
+  if (!st) {
+    if (!fs.existsSync(p)) { try { execFileSync('mkfifo', ['-m', '0666', p]); } catch (e) {} }
+    var fd = fs.openSync(p, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+    st = { fd: fd, buf: Buffer.alloc(0) };
+    fftState[src] = st;
+  }
+  var chunk = Buffer.allocUnsafe(1 << 16);
+  while (true) {
+    var nread;
+    try { nread = fs.readSync(st.fd, chunk, 0, chunk.length, null); }
+    catch (e) { if (e.code === 'EAGAIN') break; throw e; }
+    if (nread <= 0) break;
+    st.buf = Buffer.concat([st.buf, chunk.subarray(0, nread)]);
+    if (st.buf.length > FFT_MAXB) st.buf = Buffer.from(st.buf.subarray(st.buf.length - FFT_MAXB));
+  }
+  var n = st.buf.length & ~7;                                       // multiple de 8 octets
+  if (n < FFT_NFFT * 8) return null;
+  return fftAlignedF32(st.buf, n);
+}
+
+function fftReadTail(p) {                                           // cfile qui grandit : on lit la queue fraîche
+  var sz = fs.statSync(p).size;
+  var nbytes = Math.min(sz - (sz % 8), FFT_NSAMP * 8);
+  if (nbytes < FFT_NFFT * 8) return null;
+  var buf = Buffer.alloc(nbytes);
+  var fd = fs.openSync(p, 'r');
+  try { fs.readSync(fd, buf, 0, nbytes, sz > nbytes ? sz - nbytes : 0); }
+  finally { fs.closeSync(fd); }
+  var a = new Uint8Array(nbytes); a.set(buf);
+  return new Float32Array(a.buffer, 0, nbytes >> 2);
+}
+
+function fftWelch(fl) {                                             // fl: Float32Array [re,im,...] → {freqs,psd} sous-échantillonnés
+  var nsamp = fl.length >> 1;
+  if (nsamp < FFT_NFFT) return null;
+  var nseg = Math.min((nsamp / FFT_NFFT) | 0, FFT_NSEG_MAX);
+  var start = nsamp - nseg * FFT_NFFT;                             // garde les segments les plus frais
+  var acc = new Float64Array(FFT_NFFT);
+  var re = new Float64Array(FFT_NFFT), im = new Float64Array(FFT_NFFT);
+  for (var s = 0; s < nseg; s++) {
+    var base = (start + s * FFT_NFFT) * 2;
+    for (var i = 0; i < FFT_NFFT; i++) { var w = fftHann[i]; re[i] = fl[base + 2 * i] * w; im[i] = fl[base + 2 * i + 1] * w; }
+    fftRun(re, im);
+    for (var i2 = 0; i2 < FFT_NFFT; i2++) acc[i2] += re[i2] * re[i2] + im[i2] * im[i2];
+  }
+  var half = FFT_NFFT >> 1;
+  var step = Math.max(1, (FFT_NFFT / 1024) | 0);                   // sous-échantillonne pour le transport
+  var freqs = [], psd = [];
+  for (var k = 0; k < FFT_NFFT; k += step) {
+    var srcBin = (k + half) % FFT_NFFT;                            // fftshift
+    freqs.push(Math.round((k - half) * FFT_RATE / FFT_NFFT / 1e3 * 10) / 10);   // kHz, 1 décimale
+    psd.push(Math.round((10 * Math.log10(acc[srcBin] / nseg + 1e-12)) * 100) / 100);
+  }
+  return { freqs: freqs, psd: psd };
+}
+
+function psdJson(src) {
+  if (!FFT_SRC[src]) src = 'ms';
+  var s = FFT_SRC[src];
+  try {
+    var fl = fftIsFifo(s.path) ? fftReadLive(src, s.path) : fftReadTail(s.path);
+    var r = fl ? fftWelch(fl) : null;
+    if (!r) return { error: "flux pas encore prêt (pas assez d'échantillons)", label: s.label };
+    return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { error: 'source absente (' + s.path + ') — lance la stack', label: s.label };
+    return { error: String((e && e.message) || e), label: s.label };
+  }
+}
+
+function logTail(which) {                                           // queue brute du log (ANSI conservé)
+  var p = FFT_LOG[which];
+  if (!p) return { error: 'log inconnu' };
+  try {
+    var sz = fs.statSync(p).size;
+    var n = Math.min(sz, FFT_LOG_BYTES);
+    if (n === 0) return { text: '', path: p };
+    var buf = Buffer.alloc(n);
+    var fd = fs.openSync(p, 'r');
+    try { fs.readSync(fd, buf, 0, n, sz > n ? sz - n : 0); } finally { fs.closeSync(fd); }
+    return { text: buf.toString('utf8'), path: p };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { error: 'log absent (' + p + ')', path: p };
+    return { error: String((e && e.message) || e), path: p };
+  }
+}
+
 const httpServer = http.createServer(function(req, res) {
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ operators: operators, activeOpIds: activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
+  }
+  if (req.url.split('?')[0] === '/psd') {     // FFT natif (Welch PSD en JS) → onglet FFT du dashboard
+    var m = /[?&]src=(ms|bts)/.exec(req.url);
+    var body = Buffer.from(JSON.stringify(psdJson(m ? m[1] : 'ms')));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': body.length });
+    return res.end(body);
+  }
+  if (req.url.split('?')[0] === '/logtail') { // queue des logs mobile (MS) / grgsm record (BTS)
+    var lm = /[?&]which=(ms|bts)/.exec(req.url);
+    var lb = Buffer.from(JSON.stringify(logTail(lm ? lm[1] : 'ms')));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': lb.length });
+    return res.end(lb);
+  }
+  if (req.url.split('?')[0] === '/audio') {   // strip ?query (cache-buster) — sinon 404 statique
+    res.writeHead(200, {
+      'Content-Type': 'audio/mpeg', 'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-cache, no-store', 'Connection': 'keep-alive',
+    });
+    audioBridge.pipeToClient(res);
+    return;
   }
   var fp = req.url === '/' ? '/index.html' : req.url;
   fp = path.join(webDir, fp);
@@ -750,6 +1014,7 @@ wss.on('connection', function(ws, req) {
     switch (msg.type) {
       case 'vty_connect':            vtyMgr.connect(msg.opId, msg.component, msg.ip); break;
       case 'vty_exec':               vtyMgr.exec(msg.key, msg.cmd);                   break;
+      case 'vty_complete':           vtyMgr.complete(msg.key, msg.partial);          break;
       case 'vty_disconnect':         vtyMgr.disconnect(msg.key);                      break;
       case 'tshark_start':           tsharkSession.start();                           break;
       case 'tshark_stop':            tsharkSession.stop();                            break;
@@ -783,6 +1048,7 @@ setTimeout(pollAll, 1500);
 
 process.on('SIGINT', function() {
   log('Shutting down');
+  try { audioBridge._stop(); } catch (e) {}
   clients.forEach(function(c) { c.tsharkSession.stop(); c.vtyMgr.closeAll(); });
   wss.close();
   httpServer.close();

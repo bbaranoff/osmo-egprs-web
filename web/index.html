@@ -84,6 +84,41 @@
   .btn.danger:hover { background:rgba(220,50,47,0.15); color:var(--red); }
   .btn.vty-btn { border-color:rgba(42,161,152,0.4); }
   .btn.vty-btn:hover { background:rgba(42,161,152,0.15); color:var(--cyan); }
+
+  /* ═══ View tabs (Console / FFT) ═══ */
+  .vtabs { display:flex; gap:4px; }
+  .vtab {
+    background:var(--bg-2); border:1px solid var(--border-b); color:var(--t2);
+    font-family:'Fira Code',monospace; font-size:12px; font-weight:600;
+    padding:5px 14px; cursor:pointer; border-radius:4px; transition:all .12s;
+  }
+  .vtab:hover { color:var(--t0); }
+  .vtab.active { background:rgba(42,161,152,0.15); color:var(--cyan); border-color:rgba(42,161,152,0.4); }
+
+  /* ═══ FFT view ═══ */
+  #fft-view { flex:1; overflow:auto; padding:12px; min-height:0; }
+  .fft-row { display:flex; gap:12px; flex-wrap:wrap; height:100%; }
+  .fft-card {
+    flex:1; min-width:380px; display:flex; flex-direction:column;
+    background:var(--bg-1); border:1px solid var(--border); border-radius:8px; padding:8px;
+  }
+  .fft-t { font-size:12px; color:var(--yellow); margin-bottom:6px; font-family:'Fira Code',monospace; }
+  .fft-card canvas { width:100%; background:var(--term-bg); border-radius:4px; display:block; }
+  .fft-psd { height:260px; }
+  .fft-wf { height:180px; margin-top:6px; image-rendering:pixelated; }
+  .fft-err { color:var(--red); font-size:12px; min-height:14px; margin-top:6px; font-family:'Fira Code',monospace; }
+  .fft-logh {
+    font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--t3); font-family:'Fira Code',monospace; margin:8px 0 4px;
+  }
+  .fft-log {
+    flex:1; min-height:120px; max-height:38vh; overflow:auto; margin:0;
+    background:var(--term-bg); color:var(--term-text); border:1px solid var(--border);
+    border-radius:4px; padding:6px 8px; font-family:'Fira Code',monospace;
+    font-size:11px; line-height:1.4; white-space:pre-wrap; word-break:break-word;
+  }
+  .fft-log::-webkit-scrollbar { width:6px; }
+  .fft-log::-webkit-scrollbar-thumb { background:var(--bg-3); border-radius:3px; }
   .theme-btn {
     background:var(--bg-2); border:1px solid var(--border-b); color:var(--t2);
     width:34px; height:34px; border-radius:50%; cursor:pointer;
@@ -322,6 +357,11 @@
     <span class="sep"></span>
     <span class="htag" id="tag-ops">0 ops</span>
     <span class="htag" id="tag-tshark">tshark off</span>
+    <span class="sep"></span>
+    <div class="vtabs">
+      <button class="vtab active" id="vtab-console" onclick="switchView('console')">Console</button>
+      <button class="vtab" id="vtab-fft" onclick="switchView('fft')">📡 FFT</button>
+    </div>
     <div class="hright">
       <button class="btn primary" onclick="send({type:'tshark_start'})" title="Start capture">▶ Capture</button>
       <button class="btn danger" onclick="send({type:'tshark_stop'})" title="Stop capture">■ Stop</button>
@@ -375,6 +415,28 @@
       </div>
     </div>
   </div>
+
+  <!-- FFT view (MS & BTS) — données proxidées vers fft_web.py via /psd -->
+  <div id="fft-view" style="display:none">
+    <div class="fft-row">
+      <div class="fft-card">
+        <div class="fft-t" id="t-ms">MS</div>
+        <canvas id="c-ms" class="fft-psd"></canvas>
+        <canvas id="w-ms" class="fft-wf"></canvas>
+        <div class="fft-err" id="e-ms"></div>
+        <div class="fft-logh">mobile.log</div>
+        <pre class="fft-log" id="log-ms"></pre>
+      </div>
+      <div class="fft-card">
+        <div class="fft-logh">grgsm record</div>
+        <pre class="fft-log" id="log-bts"></pre>
+        <div class="fft-t" id="t-bts">BTS</div>
+        <canvas id="c-bts" class="fft-psd"></canvas>
+        <canvas id="w-bts" class="fft-wf"></canvas>
+        <div class="fft-err" id="e-bts"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- VTY popup container -->
@@ -407,6 +469,79 @@ try {
   const saved = localStorage.getItem('osmo-theme');
   if (saved) { document.documentElement.dataset.theme = saved; document.getElementById('theme-toggle').textContent = saved === 'dark' ? '◐' : '◑'; }
 } catch {}
+
+// ═══ FFT view (MS & BTS) — logique portée de fft_web.py, données via /psd ═══
+var FFT_REFRESH_MS = 150;        // ~7 img/s × 2 sources ; ajustable
+var fftTimer = null;
+function fftCmap(v){v=Math.max(0,Math.min(1,v));var h=(1-v)*240,l=0.12+0.5*v,a=1*Math.min(l,1-l);
+ var f=function(n){var k=(n+h/30)%12;return Math.round(255*(l-a*Math.max(-1,Math.min(k-3,9-k,1))));};
+ return [f(0),f(8),f(4)];}
+function fftDrawPsd(src,d){var c=document.getElementById('c-'+src),x=c.getContext('2d');
+ var W=c.width=c.clientWidth*2,H=c.height=c.clientHeight*2;x.clearRect(0,0,W,H);
+ var p=d.psd,n=p.length;if(!n)return;var mn=Math.min.apply(null,p),mx=Math.max.apply(null,p),rg=(mx-mn)||1;
+ x.strokeStyle='#16222b';x.lineWidth=1;for(var g=0;g<=4;g++){var yy=H*g/4;x.beginPath();x.moveTo(0,yy);x.lineTo(W,yy);x.stroke();}
+ x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.strokeStyle='#243845';x.stroke();
+ x.strokeStyle='#2aa198';x.lineWidth=2;x.beginPath();
+ for(var i=0;i<n;i++){var xx=W*i/(n-1),yy=H-(p[i]-mn)/rg*H*0.9-H*0.05;i?x.lineTo(xx,yy):x.moveTo(xx,yy);}
+ x.stroke();}
+function fftDrawWf(src,d){var c=document.getElementById('w-'+src),x=c.getContext('2d');
+ var p=d.psd,n=p.length;if(!n)return;
+ if(c.width!==n){c.width=n;c.height=160;x.fillStyle='#060a0e';x.fillRect(0,0,n,c.height);}
+ x.drawImage(c,0,-1);                       // scroll vers le haut d'1px
+ var mn=Math.min.apply(null,p),mx=Math.max.apply(null,p),rg=(mx-mn)||1;
+ var row=x.createImageData(n,1);
+ for(var i=0;i<n;i++){var col=fftCmap((p[i]-mn)/rg),o=i*4;row.data[o]=col[0];row.data[o+1]=col[1];row.data[o+2]=col[2];row.data[o+3]=255;}
+ x.putImageData(row,0,c.height-1);}         // nouvelle ligne en bas
+function fftDraw(src,d){var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
+ if(d.error){e.textContent=d.error;tt.textContent=d.label||'';return;} e.textContent='';
+ tt.textContent=d.label+'  •  ARFCN '+d.arfcn+'  •  Fs '+(d.rate/1e6).toFixed(3)+' MHz';
+ fftDrawPsd(src,d);fftDrawWf(src,d);}
+function fftTick(){['ms','bts'].forEach(function(s){
+  fetch('/psd?src='+s+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){fftDraw(s,d);}).catch(function(){});});}
+// ── Logs colorisés (ANSI → HTML) : mobile.log (MS) + grgsm record (BTS) ──
+var ANSI_FG = {30:'#586e75',31:'#dc322f',32:'#859900',33:'#b58900',34:'#268bd2',35:'#d33682',36:'#2aa198',37:'#eee8d5',
+ 90:'#657b83',91:'#cb4b16',92:'#859900',93:'#b58900',94:'#268bd2',95:'#6c71c4',96:'#2aa198',97:'#fdf6e3'};
+function fftXterm256(n){
+ if(n<16)return ['000000','800000','008000','808000','000080','800080','008080','c0c0c0','808080','ff0000','00ff00','ffff00','0000ff','ff00ff','00ffff','ffffff'][n];
+ if(n>=232){var v=(8+(n-232)*10).toString(16);return (v.length<2?'0'+v:v).repeat(3);}
+ n-=16;var lv=function(x){x=x?55+x*40:0;x=x.toString(16);return x.length<2?'0'+x:x;};
+ return lv((n/36|0))+lv(((n%36)/6|0))+lv(n%6);}
+function ansiToHtml(s){
+ s=s.replace(/[&<>]/g,function(c){return c==='&'?'&amp;':c==='<'?'&lt;':'&gt;';});
+ var out='',open=false,cur={},re=/\x1b\[([0-9;]*)m/g,last=0,m;
+ while((m=re.exec(s))){
+  out+=s.slice(last,m.index);last=re.lastIndex;if(open){out+='</span>';open=false;}
+  var codes=m[1]===''?[0]:m[1].split(';').map(Number);
+  for(var i=0;i<codes.length;i++){var c=codes[i];
+   if(c===0)cur={};else if(c===1)cur.bold=true;else if(c===22)cur.bold=false;
+   else if(c===39)cur.fg=null;else if(ANSI_FG[c])cur.fg=ANSI_FG[c];
+   else if(c===38&&codes[i+1]===5){cur.fg='#'+fftXterm256(codes[i+2]|0);i+=2;}
+   else if(c===38&&codes[i+1]===2){cur.fg='rgb('+(codes[i+2]|0)+','+(codes[i+3]|0)+','+(codes[i+4]|0)+')';i+=4;}}
+  var st=(cur.fg?'color:'+cur.fg+';':'')+(cur.bold?'font-weight:700;':'');
+  if(st){out+='<span style="'+st+'">';open=true;}}
+ out+=s.slice(last);if(open)out+='</span>';return out;}
+var fftLogTimer=null;
+function fftLogTick(){['ms','bts'].forEach(function(w){
+  fetch('/logtail?which='+w+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){
+   var el=document.getElementById('log-'+w);if(!el)return;
+   var atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
+   el.innerHTML=d.error?'<span style="color:#dc322f">'+d.error+'</span>':ansiToHtml(d.text||'');
+   if(atBottom)el.scrollTop=el.scrollHeight;
+  }).catch(function(){});});}
+function switchView(v){
+  var fft = v==='fft';
+  document.getElementById('main').style.display = fft?'none':'';
+  document.getElementById('fft-view').style.display = fft?'':'none';
+  document.getElementById('vtab-console').classList.toggle('active',!fft);
+  document.getElementById('vtab-fft').classList.toggle('active',fft);
+  if(fft){
+    if(!fftTimer){ fftTick(); fftTimer=setInterval(fftTick,FFT_REFRESH_MS); }
+    if(!fftLogTimer){ fftLogTick(); fftLogTimer=setInterval(fftLogTick,1000); }
+  } else {
+    if(fftTimer){ clearInterval(fftTimer); fftTimer=null; }
+    if(fftLogTimer){ clearInterval(fftLogTimer); fftLogTimer=null; }
+  }
+}
 
 // ═══ Detail tab switching ═══
 let currentDetailTab = 'decode';
@@ -960,6 +1095,7 @@ function vtyPopKey(e, wid) {
   if (e.key==='Enter') {
     const cmd = input.value;
     if (!w.key) return;
+    w.tab = null;
     w.buffer += `\x1b[cmd]${cmd}\x1b[/]\r\n`;
     w.history.push(cmd); w.histIdx = w.history.length;
     send({ type:'vty_exec', key:w.key, cmd });
@@ -972,10 +1108,45 @@ function vtyPopKey(e, wid) {
     e.preventDefault();
     if (w.histIdx<w.history.length-1) { w.histIdx++; input.value=w.history[w.histIdx]||''; }
     else { w.histIdx=w.history.length; input.value=''; }
-  } else if (e.key==='Tab' || e.key==='?') {
-    // complétion osmocom : liste les options sans exécuter (serveur: '?' + Ctrl-U)
+  } else if (e.key==='?') {
+    // aide osmocom : liste les options possibles (serveur envoie 'partial?')
     e.preventDefault();
+    w.tab = null;
     if (w.key) send({ type:'vty_complete', key:w.key, partial:input.value });
+  } else if (e.key==='Tab') {
+    // complétion : même listing osmocom, puis on complète le mot côté client
+    e.preventDefault();
+    if (w.key) { w.tab = { partial: input.value }; send({ type:'vty_complete', key:w.key, partial:input.value }); }
+  }
+}
+
+// Complétion Tab : parse le listing osmocom renvoyé après 'partial?' et complète
+// le dernier mot jusqu'au plus long préfixe commun (transport telnet ligne : pas
+// de complétion char-level native, on la reconstruit côté client). Sans candidat
+// fiable on ne touche pas l'input → au pire le listing s'affiche comme pour '?'.
+function vtyTabComplete(wid, added) {
+  const w = vtyWindows[wid];
+  if (!w || !w.tab) return;
+  const partial = w.tab.partial; w.tab = null;
+  const cands = [];
+  added.split(/\r?\n/).forEach(function(ln){
+    const t = ln.replace(/\x1b\[[^m]*m/g,'').trim();
+    if (!t || t[0]==='%') return;
+    const first = t.split(/\s+/)[0];
+    if (/^[A-Za-z0-9_.\-]+$/.test(first)) cands.push(first);   // token simple (pas prompt/<range>)
+  });
+  if (!cands.length) return;
+  const parts = partial.split(/\s+/);
+  const lastWord = parts[parts.length-1];
+  let matching = cands.filter(function(c){ return c.indexOf(lastWord)===0; });
+  if (!matching.length) return;
+  const lcp = matching.reduce(function(a,b){ let i=0; while(i<a.length&&i<b.length&&a[i]===b[i]) i++; return a.slice(0,i); });
+  const input = document.querySelector('#'+wid+' .vty-input-row input');
+  if (!input) return;
+  if (lcp.length > lastWord.length || (matching.length===1 && lcp===lastWord)) {
+    parts[parts.length-1] = lcp;
+    input.value = parts.join(' ') + (matching.length===1 ? ' ' : '');
+    input.focus();
   }
 }
 
@@ -1025,6 +1196,7 @@ function vtyOnData(d) {
   const w = vtyWindows[wid];
   w.buffer += d.data;
   if (w.buffer.length > 120000) w.buffer = w.buffer.slice(-80000);
+  if (w.tab) vtyTabComplete(wid, d.data);
   renderVtyPop(wid);
 }
 

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check server.js)",
+      "Bash(node --check server/server.js)",
+      "Bash(find / -name \"start-direct.sh\")",
+      "Read(//opt/GSM/**)",
+      "Bash(grep -n \"^HERE=\\\\|HERE=\\\\$\\\\|RUN_DIR=\\\\|LOG_DIR=\" /home/nirvana/osmo_egprs/start-direct.sh)",
+      "Bash(docker run *)",
+      "Bash(docker exec fft-itest node -e ' *)",
+      "Bash(docker rm *)",
+      "Bash(cp server.js server/server.js)",
+      "Bash(printf '\\\\x1b[32mGREEN ok\\\\x1b[0m line1\\\\n\\\\x1b[1;31mBOLD RED err\\\\x1b[0m line2\\\\nplain line3\\\\n')"
+    ]
+  }
+}
