@@ -824,8 +824,8 @@ var fftState = {};                                                  // src -> { 
 // Logs adossés à chaque spectre (queue brute, ANSI conservé → colorisé côté web).
 // MS  : log du mobile osmocom (sous la FFT DSP).   BTS : log grgsm record (au-dessus de la FFT BTS).
 const FFT_LOG = {
-  ms:  process.env.FFT_LOG_MS  || '/var/log/osmocom/mobile-bts1.log',
-  bts: process.env.FFT_LOG_BTS || '/var/log/osmocom/record_drain.log',
+  ms:  process.env.FFT_LOG_MS  || '/root/mobile.log',
+  bts: process.env.FFT_LOG_BTS || '/root/record.log',
 };
 const FFT_LOG_BYTES = parseInt(process.env.FFT_LOG_BYTES || '16384', 10);   // queue lue par requête
 
