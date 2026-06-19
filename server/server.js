@@ -816,7 +816,7 @@ const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit êt
 const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
 const FFT_MAXB     = FFT_NSAMP * 8;                                  // octets gardés (complex64 = 8 o/échantillon)
 const FFT_SRC = {
-  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.cfile)' },
+  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.fifo)' },
   bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
 };
 var fftState = {};                                                  // src -> { fd, buf:Buffer }

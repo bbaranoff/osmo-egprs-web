@@ -364,7 +364,7 @@ TsharkSession.prototype.start = function() {
   } else {
     var gwIface = findIfaceByIp(DOCKER_GW_IP);
     if (gwIface) { this.capIface = gwIface; log('Interface auto depuis GW ' + DOCKER_GW_IP + ': ' + gwIface); }
-    else          { this.capIface = 'lo';   log('GW ' + DOCKER_GW_IP + ' non trouvée, fallback "lo"'); }
+    else          { this.capIface = 'anp0s3';   log('GW ' + DOCKER_GW_IP + ' non trouvée, fallback "enp0s3"'); }
   }
 
   var FILTER = 'udp port ' + GSMTAP_UDP + ' or sctp';
@@ -372,7 +372,7 @@ TsharkSession.prototype.start = function() {
     '-i', this.capIface,
   ];
   // -p (no promiscuous) seulement si ce n'est pas "any"
-  if (this.capIface !== 'lo') args.push('-p');
+  if (this.capIface !== 'enp0s3') args.push('-p');
   args = args.concat([
     '-f', FILTER,
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
@@ -816,7 +816,7 @@ const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit êt
 const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
 const FFT_MAXB     = FFT_NSAMP * 8;                                  // octets gardés (complex64 = 8 o/échantillon)
 const FFT_SRC = {
-  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.cfile)' },
+  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.fifo)' },
   bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
 };
 var fftState = {};                                                  // src -> { fd, buf:Buffer }
