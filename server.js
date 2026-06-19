@@ -3,7 +3,7 @@ const os = require('os');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec, execFile } = require('child_process');
+const { spawn, exec, execFile, execFileSync } = require('child_process');
 
 function execAsync(cmd, timeoutMs) {
   timeoutMs = timeoutMs || 5000;
@@ -804,10 +804,175 @@ const MIME = {
 };
 const webDir = path.join(__dirname, 'web');
 
+// ─── FFT natif (Welch PSD) ───────────────────────────────────
+// Port direct de fft-web/fft_web.py en JS pur : lit les sources I/Q complex64
+// (cfile en tail, ou FIFO live O_RDWR|O_NONBLOCK), calcule la PSD Welch
+// (fenêtre Hanning, NSEG_MAX segments moyennés), et renvoie le même JSON que
+// l'ancien backend Python. Aucune dépendance externe — le dashboard sert les
+// deux spectres MS/BTS nativement dans son onglet « 📡 FFT ».
+const FFT_RATE     = parseFloat(process.env.RATE || '1083333');   // Fs natif = 26e6/24
+const FFT_NSAMP    = parseInt(process.env.NSAMP    || '262144', 10);
+const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit être une puissance de 2
+const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
+const FFT_MAXB     = FFT_NSAMP * 8;                                  // octets gardés (complex64 = 8 o/échantillon)
+const FFT_SRC = {
+  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.fifo)' },
+  bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
+};
+var fftState = {};                                                  // src -> { fd, buf:Buffer }
+
+// Logs adossés à chaque spectre (queue brute, ANSI conservé → colorisé côté web).
+// MS  : log du mobile osmocom (sous la FFT DSP).   BTS : log grgsm record (au-dessus de la FFT BTS).
+const FFT_LOG = {
+  ms:  process.env.FFT_LOG_MS  || '/var/log/osmocom/mobile-bts1.log',
+  bts: process.env.FFT_LOG_BTS || '/var/log/osmocom/record_drain.log',
+};
+const FFT_LOG_BYTES = parseInt(process.env.FFT_LOG_BYTES || '16384', 10);   // queue lue par requête
+
+// FFT itérative radix-2 (Cooley-Tukey), in-place sur re[]/im[] Float64Array.
+function makeFFT(n) {
+  var levels = Math.round(Math.log2(n));
+  if ((1 << levels) !== n) throw new Error('NFFT doit être une puissance de 2');
+  var rev = new Uint32Array(n);
+  for (var i = 0; i < n; i++) { var x = i, r = 0; for (var j = 0; j < levels; j++) { r = (r << 1) | (x & 1); x >>= 1; } rev[i] = r; }
+  var cos = new Float64Array(n >> 1), sin = new Float64Array(n >> 1);
+  for (var k = 0; k < (n >> 1); k++) { var a = -2 * Math.PI * k / n; cos[k] = Math.cos(a); sin[k] = Math.sin(a); }
+  return function(re, im) {
+    for (var i = 0; i < n; i++) { var r = rev[i]; if (r > i) { var t = re[i]; re[i] = re[r]; re[r] = t; t = im[i]; im[i] = im[r]; im[r] = t; } }
+    for (var len = 2; len <= n; len <<= 1) {
+      var half = len >> 1, step = (n / len) | 0;
+      for (var i2 = 0; i2 < n; i2 += len) {
+        for (var k2 = 0, tw = 0; k2 < half; k2++, tw += step) {
+          var wr = cos[tw], wi = sin[tw];
+          var ar = re[i2 + k2 + half], ai = im[i2 + k2 + half];
+          var br = ar * wr - ai * wi, bi = ar * wi + ai * wr;
+          re[i2 + k2 + half] = re[i2 + k2] - br; im[i2 + k2 + half] = im[i2 + k2] - bi;
+          re[i2 + k2] += br; im[i2 + k2] += bi;
+        }
+      }
+    }
+  };
+}
+const fftRun = makeFFT(FFT_NFFT);
+const fftHann = new Float64Array(FFT_NFFT);                         // np.hanning(M) = 0.5 - 0.5 cos(2πn/(M-1))
+for (let i = 0; i < FFT_NFFT; i++) fftHann[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (FFT_NFFT - 1));
+
+function fftIsFifo(p) {
+  try { return fs.statSync(p).isFIFO(); } catch (e) { return p.endsWith('.fifo'); }
+}
+
+// Vue Float32 alignée (re,im entrelacés) sur les `n` derniers octets d'un Buffer.
+function fftAlignedF32(buf, n) {
+  var a = new Uint8Array(n);
+  a.set(buf.subarray(buf.length - n));
+  return new Float32Array(a.buffer, 0, n >> 2);
+}
+
+function fftReadLive(src, p) {                                      // FIFO live, jamais d'EOF (O_RDWR), borné à MAXB
+  var st = fftState[src];
+  if (!st) {
+    if (!fs.existsSync(p)) { try { execFileSync('mkfifo', ['-m', '0666', p]); } catch (e) {} }
+    var fd = fs.openSync(p, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+    st = { fd: fd, buf: Buffer.alloc(0) };
+    fftState[src] = st;
+  }
+  var chunk = Buffer.allocUnsafe(1 << 16);
+  while (true) {
+    var nread;
+    try { nread = fs.readSync(st.fd, chunk, 0, chunk.length, null); }
+    catch (e) { if (e.code === 'EAGAIN') break; throw e; }
+    if (nread <= 0) break;
+    st.buf = Buffer.concat([st.buf, chunk.subarray(0, nread)]);
+    if (st.buf.length > FFT_MAXB) st.buf = Buffer.from(st.buf.subarray(st.buf.length - FFT_MAXB));
+  }
+  var n = st.buf.length & ~7;                                       // multiple de 8 octets
+  if (n < FFT_NFFT * 8) return null;
+  return fftAlignedF32(st.buf, n);
+}
+
+function fftReadTail(p) {                                           // cfile qui grandit : on lit la queue fraîche
+  var sz = fs.statSync(p).size;
+  var nbytes = Math.min(sz - (sz % 8), FFT_NSAMP * 8);
+  if (nbytes < FFT_NFFT * 8) return null;
+  var buf = Buffer.alloc(nbytes);
+  var fd = fs.openSync(p, 'r');
+  try { fs.readSync(fd, buf, 0, nbytes, sz > nbytes ? sz - nbytes : 0); }
+  finally { fs.closeSync(fd); }
+  var a = new Uint8Array(nbytes); a.set(buf);
+  return new Float32Array(a.buffer, 0, nbytes >> 2);
+}
+
+function fftWelch(fl) {                                             // fl: Float32Array [re,im,...] → {freqs,psd} sous-échantillonnés
+  var nsamp = fl.length >> 1;
+  if (nsamp < FFT_NFFT) return null;
+  var nseg = Math.min((nsamp / FFT_NFFT) | 0, FFT_NSEG_MAX);
+  var start = nsamp - nseg * FFT_NFFT;                             // garde les segments les plus frais
+  var acc = new Float64Array(FFT_NFFT);
+  var re = new Float64Array(FFT_NFFT), im = new Float64Array(FFT_NFFT);
+  for (var s = 0; s < nseg; s++) {
+    var base = (start + s * FFT_NFFT) * 2;
+    for (var i = 0; i < FFT_NFFT; i++) { var w = fftHann[i]; re[i] = fl[base + 2 * i] * w; im[i] = fl[base + 2 * i + 1] * w; }
+    fftRun(re, im);
+    for (var i2 = 0; i2 < FFT_NFFT; i2++) acc[i2] += re[i2] * re[i2] + im[i2] * im[i2];
+  }
+  var half = FFT_NFFT >> 1;
+  var step = Math.max(1, (FFT_NFFT / 1024) | 0);                   // sous-échantillonne pour le transport
+  var freqs = [], psd = [];
+  for (var k = 0; k < FFT_NFFT; k += step) {
+    var srcBin = (k + half) % FFT_NFFT;                            // fftshift
+    freqs.push(Math.round((k - half) * FFT_RATE / FFT_NFFT / 1e3 * 10) / 10);   // kHz, 1 décimale
+    psd.push(Math.round((10 * Math.log10(acc[srcBin] / nseg + 1e-12)) * 100) / 100);
+  }
+  return { freqs: freqs, psd: psd };
+}
+
+function psdJson(src) {
+  if (!FFT_SRC[src]) src = 'ms';
+  var s = FFT_SRC[src];
+  try {
+    var fl = fftIsFifo(s.path) ? fftReadLive(src, s.path) : fftReadTail(s.path);
+    var r = fl ? fftWelch(fl) : null;
+    if (!r) return { error: "flux pas encore prêt (pas assez d'échantillons)", label: s.label };
+    return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { error: 'source absente (' + s.path + ') — lance la stack', label: s.label };
+    return { error: String((e && e.message) || e), label: s.label };
+  }
+}
+
+function logTail(which) {                                           // queue brute du log (ANSI conservé)
+  var p = FFT_LOG[which];
+  if (!p) return { error: 'log inconnu' };
+  try {
+    var sz = fs.statSync(p).size;
+    var n = Math.min(sz, FFT_LOG_BYTES);
+    if (n === 0) return { text: '', path: p };
+    var buf = Buffer.alloc(n);
+    var fd = fs.openSync(p, 'r');
+    try { fs.readSync(fd, buf, 0, n, sz > n ? sz - n : 0); } finally { fs.closeSync(fd); }
+    return { text: buf.toString('utf8'), path: p };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { error: 'log absent (' + p + ')', path: p };
+    return { error: String((e && e.message) || e), path: p };
+  }
+}
+
 const httpServer = http.createServer(function(req, res) {
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ operators: operators, activeOpIds: activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
+  }
+  if (req.url.split('?')[0] === '/psd') {     // FFT natif (Welch PSD en JS) → onglet FFT du dashboard
+    var m = /[?&]src=(ms|bts)/.exec(req.url);
+    var body = Buffer.from(JSON.stringify(psdJson(m ? m[1] : 'ms')));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': body.length });
+    return res.end(body);
+  }
+  if (req.url.split('?')[0] === '/logtail') { // queue des logs mobile (MS) / grgsm record (BTS)
+    var lm = /[?&]which=(ms|bts)/.exec(req.url);
+    var lb = Buffer.from(JSON.stringify(logTail(lm ? lm[1] : 'ms')));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': lb.length });
+    return res.end(lb);
   }
   if (req.url.split('?')[0] === '/audio') {   // strip ?query (cache-buster) — sinon 404 statique
     res.writeHead(200, {
