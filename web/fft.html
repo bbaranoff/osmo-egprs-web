@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calypso I/Q FFT — MS vs BTS</title>
+<style>
+  :root{
+    --bg:#0a1622; --panel:#0c1a28; --sep:#06101a;
+    --trace:#5fd0c8; --trace-glow:#5fd0c855;
+    --ink:#74e0d0; --muted:#5a8a86; --grid:#13283a;
+    --hot:#ff6a3d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:13px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  header{
+    display:flex; align-items:center; gap:12px;
+    padding:8px 14px; border-bottom:1px solid var(--sep);
+    background:linear-gradient(180deg,#0d1d2c,#0a1622);
+    flex:0 0 auto;
+  }
+  header .dish{font-size:14px}
+  header h1{
+    margin:0; font-size:13px; font-weight:600; letter-spacing:.3px;
+    color:var(--ink);
+  }
+  header h1 small{color:var(--muted); font-weight:400}
+  .pill{
+    margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+    padding:3px 9px; border:1px solid var(--grid); border-radius:999px;
+    color:var(--muted); font-size:11px; letter-spacing:.5px; cursor:pointer;
+    user-select:none;
+  }
+  .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .pill.live{color:#9fe9a0;border-color:#2c5e3a}
+  .pill.live .dot{background:#5fd06a;box-shadow:0 0 7px #5fd06a}
+
+  main{flex:1 1 auto; min-height:0; display:flex; flex-direction:column}
+  .group{flex:1 1 0; min-height:0; display:flex; flex-direction:column}
+  .group.bts{justify-content:flex-end}            /* mirror: BTS label/line outside */
+  .label{
+    padding:5px 14px 4px; color:var(--muted); font-size:11px;
+    letter-spacing:.3px; flex:0 0 auto;
+  }
+  .label b{color:var(--ink); font-weight:600}
+  .label .arf{color:var(--trace)}
+  canvas{display:block; width:100%}
+  canvas.line{flex:1 1 0; min-height:60px; background:transparent}
+  canvas.wf{flex:1 1 0; min-height:70px; background:#04101c}
+  .seam{height:1px; background:var(--sep); flex:0 0 auto}
+  footer{
+    flex:0 0 auto; padding:4px 14px; border-top:1px solid var(--sep);
+    color:var(--muted); font-size:10.5px; letter-spacing:.2px;
+  }
+  footer code{color:var(--trace)}
+  @media (max-width:560px){ .label{font-size:10px} header h1 small{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <span class="dish">📡</span>
+  <h1>Calypso&nbsp;I/Q&nbsp;FFT <small>— MS vs BTS</small></h1>
+  <span class="pill" id="modePill" title="click to toggle demo / live"><span class="dot"></span><span id="modeTxt">DEMO</span></span>
+</header>
+
+<main>
+  <!-- MS : line on top, waterfall below -->
+  <section class="group ms">
+    <div class="label" id="lbl-ms">MS — <b>Calypso DSP</b> (dsp_iq) · <span class="arf">ARFCN 514</span> · Fs 1.083 MHz</div>
+    <canvas class="line" data-ch="ms"></canvas>
+    <canvas class="wf"   data-ch="ms"></canvas>
+  </section>
+
+  <div class="seam"></div>
+
+  <!-- BTS : waterfall on top, line below (mirror of MS) -->
+  <section class="group bts">
+    <canvas class="wf"   data-ch="bts"></canvas>
+    <canvas class="line" data-ch="bts"></canvas>
+    <div class="label" id="lbl-bts">BTS — <b>DL relay LIVE</b> (iq_fft.fifo) · <span class="arf">ARFCN 514</span> · Fs 1.083 MHz</div>
+  </section>
+</main>
+
+<footer>live ← <code>/psd?src=ms|bts</code> (Welch PSD natif, server.js) · normalisé dB→0..1 · fallback démo si pas de flux</footer>
+
+<script>
+"use strict";
+
+/* ---- turbo colormap LUT (Mikhailov polynomial), 256 entries ---- */
+const TURBO = (() => {
+  const lut = new Uint8Array(256 * 3);
+  const cb = v => (v < 0 ? 0 : v > 255 ? 255 : v | 0);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255, x2 = x*x, x3 = x2*x, x4 = x2*x2, x5 = x4*x;
+    const r = 0.13572138 + 4.6153926*x - 42.66032258*x2 + 132.13108234*x3 - 152.94239396*x4 + 59.28637943*x5;
+    const g = 0.09140261 + 2.19418839*x + 4.84296658*x2 - 14.18503333*x3 + 4.27729857*x4 + 2.82956604*x5;
+    const b = 0.1066733  + 12.64194608*x - 60.58204836*x2 + 110.36276771*x3 - 89.90310912*x4 + 27.34824973*x5;
+    lut[i*3] = cb(r*255); lut[i*3+1] = cb(g*255); lut[i*3+2] = cb(b*255);
+  }
+  return lut;
+})();
+
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+
+/* ---- resample an arbitrary-length magnitude array to width w ---- */
+function resample(src, w){
+  const n = src.length;
+  if (n === w) return src;
+  const out = new Float32Array(w);
+  for (let x = 0; x < w; x++){
+    const p = x / (w - 1) * (n - 1), i = p | 0, f = p - i;
+    out[x] = i + 1 < n ? src[i]*(1-f) + src[i+1]*f : src[i];
+  }
+  return out;
+}
+
+class Panel {
+  constructor(ch){
+    this.ch = ch;
+    this.line = document.querySelector(`canvas.line[data-ch="${ch}"]`);
+    this.wf   = document.querySelector(`canvas.wf[data-ch="${ch}"]`);
+    this.lc = this.line.getContext('2d');
+    this.wc = this.wf.getContext('2d', { willReadFrequently:false });
+    this.mode = 'demo';                 // 'demo' | 'live'
+    this.W = 2; this.wfH = 2;
+    this.phase = Math.random()*6.28;
+    this.tilt  = ch === 'bts' ? 1 : 0;  // slight visual variation between panels
+    this.resize();
+  }
+  resize(){
+    // line canvas: crisp (DPR-scaled)
+    const lw = this.line.clientWidth, lh = this.line.clientHeight;
+    this.line.width = Math.max(2, lw*DPR); this.line.height = Math.max(2, lh*DPR);
+    this.lc.setTransform(DPR,0,0,DPR,0,0);
+    this.lw = lw; this.lh = lh;
+    // waterfall canvas: 1x backing, one bin per pixel column
+    const ww = Math.max(2, this.wf.clientWidth|0), wh = Math.max(2, this.wf.clientHeight|0);
+    // preserve existing waterfall on resize where possible
+    const prev = (this.wf.width && this.wf.height)
+      ? this.wc.getImageData(0,0,this.wf.width,this.wf.height) : null;
+    this.wf.width = ww; this.wf.height = wh;
+    this.W = ww; this.wfH = wh;
+    this.wc.fillStyle = '#04101c'; this.wc.fillRect(0,0,ww,wh);
+    if (prev) this.wc.putImageData(prev,0,0);
+    this._row = this.wc.createImageData(ww,1);
+  }
+  /* synthetic GMSK-ish spectrum: bell + noise floor + carrier + digital comb */
+  synth(t){
+    const W = this.W, m = new Float32Array(W), c = W/2, bw = W*0.165;
+    const drift = Math.sin(t*0.0007 + this.phase)*0.015;
+    for (let i = 0; i < W; i++){
+      const d = (i - c) / bw;
+      const bell = Math.exp(-d*d);
+      const noise = Math.random()*0.07 + (Math.random()<0.004 ? Math.random()*0.35*bell : 0);
+      m[i] = clamp01(0.10 + (0.74+drift)*bell + noise*(0.35+0.65*bell));
+    }
+    // hot carrier line at centre
+    for (let k=-1;k<=1;k++){ const i=(c+k)|0; m[i]=clamp01(m[i]+0.18-0.06*Math.abs(k)); }
+    // digital comb: regular lines across the passband, jittered in time
+    const step = Math.max(6, W*0.045|0);
+    for (let i = (c % step); i < W; i += step){
+      const inband = Math.exp(-(((i-c)/(bw*1.25))**2));
+      const j = 0.06 + 0.10*Math.abs(Math.sin(t*0.004 + i*0.3));
+      m[i] = clamp01(m[i] + j*inband);
+      if (i+1<W) m[i+1] = clamp01(m[i+1] + 0.5*j*inband);
+    }
+    return m;
+  }
+  drawLine(mags){
+    const ctx = this.lc, W = this.lw, H = this.lh, N = mags.length;
+    ctx.clearRect(0,0,W,H);
+    // faint centre marker + baseline grid
+    ctx.strokeStyle = 'rgba(95,208,200,0.10)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
+    // trace
+    ctx.beginPath();
+    for (let x = 0; x < W; x++){
+      const v = mags[(x/(W-1)*(N-1))|0] || 0;
+      const y = H - clamp01(v)*(H*0.94) - H*0.03;
+      x ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    }
+    ctx.strokeStyle = 'var(--trace)'; ctx.lineWidth = 1;
+    ctx.shadowColor = 'rgba(95,208,200,0.55)'; ctx.shadowBlur = 4;
+    ctx.strokeStyle = '#5fd0c8'; ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  pushRow(mags){
+    const W = this.W;
+    const m = mags.length === W ? mags : resample(mags, W);
+    // scroll down 1px, draw newest row at top
+    this.wc.drawImage(this.wf, 0, 1);
+    const d = this._row.data;
+    for (let x = 0; x < W; x++){
+      const idx = (clamp01(m[x]) * 255) | 0, o = idx*3, p = x*4;
+      d[p]   = TURBO[o]; d[p+1] = TURBO[o+1]; d[p+2] = TURBO[o+2]; d[p+3] = 255;
+    }
+    this.wc.putImageData(this._row, 0, 0);
+  }
+  frame(mags){ this.drawLine(mags); this.pushRow(mags); }
+}
+
+/* ---- boot ---- */
+const panels = { ms: new Panel('ms'), bts: new Panel('bts') };
+let RO;
+function doResize(){ for (const k in panels) panels[k].resize(); }
+window.addEventListener('resize', () => { clearTimeout(RO); RO = setTimeout(doResize, 120); });
+
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FRAME_MS = reduce ? 120 : 33;          // ~8fps reduced, ~30fps normal
+let last = 0;
+function loop(t){
+  if (t - last >= FRAME_MS){
+    last = t;
+    for (const k in panels){ const p = panels[k]; if (p.mode === 'demo') p.frame(p.synth(t)); }
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ---- PUBLIC live-data hook ----
+   feedSpectrum('ms', float32Array)  /  feedSpectrum('bts', float32Array)
+   One call = one waterfall row + one line redraw on that panel.            */
+window.feedSpectrum = function(ch, mags){
+  const p = panels[ch]; if (!p) return;
+  if (p.mode !== 'live'){ p.mode = 'live'; setMode('LIVE'); }
+  p.frame(mags);
+};
+
+/* mode pill */
+const pill = document.getElementById('modePill'), modeTxt = document.getElementById('modeTxt');
+function setMode(txt){
+  modeTxt.textContent = txt;
+  pill.classList.toggle('live', txt === 'LIVE');
+}
+pill.addEventListener('click', () => {       // manual toggle back to demo for testing
+  const toDemo = pill.classList.contains('live');
+  for (const k in panels) panels[k].mode = toDemo ? 'demo' : 'live';
+  setMode(toDemo ? 'DEMO' : 'LIVE');
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   LIVE — poll server.js /psd?src=ms|bts (Welch PSD en dB) → normalise 0..1
+   → feedSpectrum(). Pas de WS : on réutilise l'endpoint HTTP natif existant.
+   La démo synthétique reste en fallback tant qu'un canal n'a pas de flux.
+   ════════════════════════════════════════════════════════════════════════ */
+const PSD_DR = 60;                           // plage dynamique (dB) sous le max → 0..1
+function applyMeta(ch, j){
+  const el = document.getElementById('lbl-'+ch);
+  if (!el || !j) return;
+  const arf = j.arfcn ? j.arfcn : '514';
+  const who = ch === 'ms' ? 'MS — <b>Calypso DSP</b> (dsp_iq)' : 'BTS — <b>DL relay LIVE</b> (iq_fft.fifo)';
+  const fs  = j.rate ? (j.rate/1e6).toFixed(3) : '1.083';
+  el.innerHTML = `${who} · <span class="arf">ARFCN ${arf}</span> · Fs ${fs} MHz`;
+}
+async function pollPsd(ch){
+  try{
+    const r = await fetch('/psd?src='+ch, { cache:'no-store' });
+    const j = await r.json();
+    if (!j || j.error || !Array.isArray(j.psd) || !j.psd.length) return;   // garde la démo
+    const psd = j.psd;
+    let mx = -Infinity;
+    for (let i=0;i<psd.length;i++) if (psd[i] > mx) mx = psd[i];
+    const floor = mx - PSD_DR;
+    const mags = new Float32Array(psd.length);
+    for (let i=0;i<psd.length;i++){ const v=(psd[i]-floor)/PSD_DR; mags[i] = v<0?0:v>1?1:v; }
+    applyMeta(ch, j);
+    feedSpectrum(ch, mags);
+  } catch(e){ /* réseau/JSON KO → on garde la démo */ }
+}
+const LIVE_MS = 150;                         // ~6.7 trames/s par canal
+setInterval(() => { pollPsd('ms'); pollPsd('bts'); }, LIVE_MS);
+pollPsd('ms'); pollPsd('bts');
+</script>
+</body>
+</html>

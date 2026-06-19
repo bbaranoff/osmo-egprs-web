@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calypso FFT — Δ|MS−BTS| entre waterfalls</title>
+<style>
+  :root{
+    --bg:#0a1622; --sep:#06101a; --grid:#13283a; --grid2:#1c3850;
+    --ink:#74e0d0; --muted:#5a8a86;
+    --ms:#5fd0c8; --bts:#ff8c42; --diff:#ffe066;   /* Δ en jaune */
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:13px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  header{
+    display:flex; align-items:center; gap:12px;
+    padding:8px 14px; border-bottom:1px solid var(--sep);
+    background:linear-gradient(180deg,#0d1d2c,#0a1622); flex:0 0 auto;
+  }
+  header h1{margin:0; font-size:13px; font-weight:600; letter-spacing:.3px}
+  header h1 small{color:var(--muted); font-weight:400}
+  .legend{margin-left:auto; display:flex; gap:14px; align-items:center; font-size:11.5px}
+  .lg{display:inline-flex; align-items:center; gap:6px; color:var(--muted)}
+  .lg .sw{width:14px; height:3px; border-radius:2px; display:inline-block}
+  .lg.ms .sw{background:var(--ms)} .lg.bts .sw{background:var(--bts)}
+  .lg.diff .sw{background:var(--diff); box-shadow:0 0 6px var(--diff)}
+  .lg b{color:var(--ink); font-weight:600}
+  .lg .st{font-size:10px; opacity:.8}
+  main{flex:1 1 auto; min-height:0; display:flex; flex-direction:column}
+  .lbl{padding:3px 14px 2px; color:var(--muted); font-size:11px; flex:0 0 auto}
+  .lbl b{color:var(--ink)} .lbl .arf{color:var(--ms)}
+  canvas{display:block; width:100%}
+  canvas.wf{flex:1 1 0; min-height:64px; background:#04101c}
+  canvas.diff{flex:1.35 1 0; min-height:90px; background:#08131f}
+  .seam{height:1px; background:var(--sep); flex:0 0 auto}
+  footer{flex:0 0 auto; padding:4px 14px; border-top:1px solid var(--sep); color:var(--muted); font-size:10.5px}
+  footer code{color:var(--diff)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 Calypso FFT <small>— Δ|MS−BTS| (dB) entre waterfalls</small></h1>
+  <div class="legend">
+    <span class="lg ms"><span class="sw"></span><b>MS</b> wf <span class="st" id="st-ms">—</span></span>
+    <span class="lg diff"><span class="sw"></span><b>Δ</b> |MS−BTS|</span>
+    <span class="lg bts"><span class="sw"></span><b>BTS</b> wf <span class="st" id="st-bts">—</span></span>
+  </div>
+</header>
+
+<main>
+  <div class="lbl" id="lbl-ms">MS — <b>Calypso DSP</b> · <span class="arf">ARFCN 514</span></div>
+  <canvas class="wf"   id="wf-ms"></canvas>
+  <div class="seam"></div>
+  <canvas class="diff" id="plot"></canvas>
+  <div class="seam"></div>
+  <canvas class="wf"   id="wf-bts"></canvas>
+  <div class="lbl" id="lbl-bts">BTS — <b>DL relay LIVE</b> · <span class="arf">ARFCN 514</span></div>
+</main>
+<footer>Δ = <code>|psd(ms) − psd(bts)|</code> par bin (dB) · ≈0 = canal transparent, pics = divergence · live ← /psd?src=ms|bts</footer>
+
+<script>
+"use strict";
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const clamp01 = v => v<0?0:v>1?1:v;
+
+/* turbo colormap LUT */
+const TURBO = (() => {
+  const lut = new Uint8Array(256*3), cb = v=>(v<0?0:v>255?255:v|0);
+  for (let i=0;i<256;i++){ const x=i/255,x2=x*x,x3=x2*x,x4=x2*x2,x5=x4*x;
+    lut[i*3]  =cb((0.13572138+4.6153926*x-42.66032258*x2+132.13108234*x3-152.94239396*x4+59.28637943*x5)*255);
+    lut[i*3+1]=cb((0.09140261+2.19418839*x+4.84296658*x2-14.18503333*x3+4.27729857*x4+2.82956604*x5)*255);
+    lut[i*3+2]=cb((0.1066733+12.64194608*x-60.58204836*x2+110.36276771*x3-89.90310912*x4+27.34824973*x5)*255);
+  } return lut;
+})();
+function resample(src,w){ const n=src.length; if(n===w) return src;
+  const o=new Float32Array(w);
+  for(let x=0;x<w;x++){ const p=x/(w-1)*(n-1), i=p|0, f=p-i; o[x]= i+1<n ? src[i]*(1-f)+src[i+1]*f : src[i]; }
+  return o;
+}
+
+/* ---- waterfall (normalisé 0..1 sur 60 dB sous le max) ---- */
+const PSD_DR = 60;
+class WF {
+  constructor(id){ this.c=document.getElementById(id); this.x=this.c.getContext('2d'); this.W=2;this.H=2; this.resize(); }
+  resize(){
+    const w=Math.max(2,this.c.clientWidth|0), h=Math.max(2,this.c.clientHeight|0);
+    const prev=(this.c.width&&this.c.height)?this.x.getImageData(0,0,this.c.width,this.c.height):null;
+    this.c.width=w; this.c.height=h; this.W=w; this.H=h;
+    this.x.fillStyle='#04101c'; this.x.fillRect(0,0,w,h);
+    if(prev) this.x.putImageData(prev,0,0);
+    this._row=this.x.createImageData(w,1);
+  }
+  push(psd){
+    if(!psd||!psd.length) return;
+    let mx=-Infinity; for(let i=0;i<psd.length;i++) if(psd[i]>mx)mx=psd[i];
+    const fl=mx-PSD_DR, W=this.W, mags=new Float32Array(psd.length);
+    for(let i=0;i<psd.length;i++){ const v=(psd[i]-fl)/PSD_DR; mags[i]=v<0?0:v>1?1:v; }
+    const m = mags.length===W ? mags : resample(mags,W);
+    this.x.drawImage(this.c,0,1);
+    const d=this._row.data;
+    for(let xx=0;xx<W;xx++){ const o=((clamp01(m[xx])*255)|0)*3, p=xx*4;
+      d[p]=TURBO[o]; d[p+1]=TURBO[o+1]; d[p+2]=TURBO[o+2]; d[p+3]=255; }
+    this.x.putImageData(this._row,0,0);
+  }
+}
+
+/* ---- plot central : Δ = |psd_ms − psd_bts| (dB), échelle réelle ---- */
+const cv=document.getElementById('plot'), ctx=cv.getContext('2d');
+let PW=2,PH=2; const M={l:46,r:14,t:10,b:22};
+function presize(){ const w=cv.clientWidth,h=cv.clientHeight;
+  cv.width=Math.max(2,w*DPR); cv.height=Math.max(2,h*DPR); ctx.setTransform(DPR,0,0,DPR,0,0); PW=w; PH=h; }
+
+const latest={ms:null,bts:null};
+const wf={ ms:null, bts:null };
+
+function computeDiff(){
+  const a=latest.ms, b=latest.bts;
+  if(!a||!b||!a.psd||!b.psd) return null;
+  const n=Math.min(a.psd.length,b.psd.length);
+  const freqs=a.freqs, diff=new Float32Array(n);
+  for(let i=0;i<n;i++) diff[i]=Math.abs(a.psd[i]-b.psd[i]);
+  return { freqs, diff, n };
+}
+function drawDiff(){
+  ctx.clearRect(0,0,PW,PH);
+  const D=computeDiff();
+  const px0=M.l,px1=PW-M.r,py0=M.t,py1=PH-M.b;
+  // axe X depuis freqs dispo (sinon défaut)
+  const f0 = D?D.freqs[0]:-542, f1 = D?D.freqs[D.n-1]:542;
+  // axe Y : 0..max(Δ) snap 10 dB
+  let ymax=10; if(D){ let mx=0; for(let i=0;i<D.n;i++) if(D.diff[i]>mx)mx=D.diff[i]; ymax=Math.max(10,Math.ceil((mx+2)/10)*10); }
+  const mapX=f=>px0+(f-f0)/(f1-f0)*(px1-px0);
+  const mapY=v=>py1-(v-0)/(ymax-0)*(py1-py0);
+  // grille Y (dB)
+  ctx.font='10px ui-monospace,monospace'; ctx.textBaseline='middle'; ctx.textAlign='right';
+  for(let v=0;v<=ymax+0.1;v+=10){ const y=mapY(v);
+    ctx.strokeStyle='#13283a'; ctx.beginPath(); ctx.moveTo(px0,y); ctx.lineTo(px1,y); ctx.stroke();
+    ctx.fillStyle='#5a8a86'; ctx.fillText(v+' dB',px0-5,y); }
+  // grille X (kHz)
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  const span=f1-f0, stepK=span>800?250:(span>300?100:50), firstK=Math.ceil(f0/stepK)*stepK;
+  for(let f=firstK;f<=f1;f+=stepK){ const x=mapX(f);
+    ctx.strokeStyle=(f===0)?'#1c3850':'#0f2030'; ctx.beginPath(); ctx.moveTo(x,py0); ctx.lineTo(x,py1); ctx.stroke();
+    ctx.fillStyle='#5a8a86'; ctx.fillText((f>0?'+':'')+f,x,py1+4); }
+  ctx.strokeStyle='#1c3850'; ctx.strokeRect(px0,py0,px1-px0,py1-py0);
+  // courbe Δ + aire transparente
+  if(D){
+    ctx.beginPath();
+    for(let i=0;i<D.n;i++){ const x=mapX(D.freqs[i]), y=mapY(D.diff[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    // aire
+    ctx.lineTo(mapX(D.freqs[D.n-1]),py1); ctx.lineTo(mapX(D.freqs[0]),py1); ctx.closePath();
+    ctx.fillStyle='rgba(255,224,102,0.12)'; ctx.fill();
+    // trait
+    ctx.beginPath();
+    for(let i=0;i<D.n;i++){ const x=mapX(D.freqs[i]), y=mapY(D.diff[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.lineWidth=1.4; ctx.strokeStyle='#ffe066'; ctx.shadowColor='#ffe066'; ctx.shadowBlur=5; ctx.stroke(); ctx.shadowBlur=0;
+  } else {
+    ctx.fillStyle='#5a8a86'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('Δ indisponible — il faut les DEUX flux (MS et BTS)',(px0+px1)/2,(py0+py1)/2);
+  }
+}
+
+function loop(){ drawDiff(); requestAnimationFrame(loop); }
+
+async function pollPsd(ch){
+  try{
+    const r=await fetch('/psd?src='+ch,{cache:'no-store'});
+    const j=await r.json();
+    const st=document.getElementById('st-'+ch);
+    if(!j||j.error||!Array.isArray(j.psd)||!j.psd.length){ latest[ch]=null; if(st)st.textContent='(pas de flux)'; return; }
+    latest[ch]=j; if(st)st.textContent='ARFCN '+(j.arfcn||'514')+' · LIVE';
+    wf[ch].push(j.psd);
+  }catch(e){}
+}
+
+window.addEventListener('resize',()=>{ clearTimeout(window._ro); window._ro=setTimeout(()=>{ wf.ms.resize(); wf.bts.resize(); presize(); },120); });
+wf.ms=new WF('wf-ms'); wf.bts=new WF('wf-bts'); presize();
+loop();
+setInterval(()=>{ pollPsd('ms'); pollPsd('bts'); },150);
+pollPsd('ms'); pollPsd('bts');
+</script>
+</body>
+</html>
