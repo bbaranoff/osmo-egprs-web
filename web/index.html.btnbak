@@ -360,9 +360,7 @@
     <span class="sep"></span>
     <div class="vtabs">
       <button class="vtab active" id="vtab-console" onclick="switchView('console')">Console</button>
-      <button class="vtab" id="vtab-fft1" onclick="switchView('fft1')" title="FFT intégrée native (MS &amp; BTS + logs)">📡 FFT 1</button>
-      <button class="vtab" id="vtab-fft2" onclick="switchView('fft2')" title="Panadapter MS vs BTS">📡 FFT 2</button>
-      <button class="vtab" id="vtab-fft3" onclick="switchView('fft3')" title="Waterfalls Δ |MS−BTS|">📡 FFT 3</button>
+      <button class="vtab" id="vtab-fft" onclick="switchView('fft')">📡 FFT</button>
     </div>
     <div class="hright">
       <button class="btn primary" onclick="send({type:'tshark_start'})" title="Start capture">▶ Capture</button>
@@ -419,10 +417,8 @@
   </div>
 
   <!-- FFT view (MS & BTS) — données proxidées vers fft_web.py via /psd -->
-  <div id="fft-view" style="display:none;position:relative;isolation:isolate">
-    <iframe id="fft-frame" style="display:none;width:100%;height:100%;border:0;background:var(--term-bg)"></iframe>
-    <iframe id="fft-overlay" title="Δ MS−BTS superposé" style="display:none;position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(180deg);transform-origin:center center;width:100%;height:100%;border:0;background:transparent;opacity:0.7;mix-blend-mode:screen;pointer-events:none;z-index:5"></iframe>
-    <div class="fft-row" id="fft-native">
+  <div id="fft-view" style="display:none">
+    <div class="fft-row">
       <div class="fft-card">
         <div class="fft-t" id="t-ms">MS</div>
         <canvas id="c-ms" class="fft-psd"></canvas>
@@ -533,27 +529,12 @@ function fftLogTick(){['ms','bts'].forEach(function(w){
    if(atBottom)el.scrollTop=el.scrollHeight;
   }).catch(function(){});});}
 function switchView(v){
-  if(v==='fft') v='fft1';                                  // compat ancien appel
-  var fft = (v==='fft1'||v==='fft2'||v==='fft3');
-  var native = (v==='fft1');                                  // pane native : canvases + logs pilotes par fftTick
-  var frameSrc = v==='fft2'?'fft.html':(v==='fft3'?'fft_diff.html':'');
+  var fft = v==='fft';
   document.getElementById('main').style.display = fft?'none':'';
   document.getElementById('fft-view').style.display = fft?'':'none';
   document.getElementById('vtab-console').classList.toggle('active',!fft);
-  ['fft1','fft2','fft3'].forEach(function(id){
-    var b=document.getElementById('vtab-'+id); if(b) b.classList.toggle('active',v===id);
-  });
-  var nat=document.getElementById('fft-native'), frm=document.getElementById('fft-frame'), ovl=document.getElementById('fft-overlay');
-  if(nat) nat.style.display = native?'':'none';
-  if(frm){                                                     // FFT 2/3 : meme rendu /psd, mais inline (iframe), pas de nouvel onglet
-    if(frameSrc){ if(frm.getAttribute('src')!==frameSrc) frm.setAttribute('src',frameSrc); frm.style.display=''; }
-    else frm.style.display='none';
-  }
-  if(ovl){                                                     // FFT 3 superposee DANS FFT 2 : transparente, centree H, rotee 180deg
-    if(v==='fft2'){ if(ovl.getAttribute('src')!=='fft_diff.html') ovl.setAttribute('src','fft_diff.html'); ovl.style.display=''; }
-    else ovl.style.display='none';
-  }
-  if(native){                                                  // les timers natifs ne tournent que pour FFT 1 ; 2/3 pollent eux-memes
+  document.getElementById('vtab-fft').classList.toggle('active',fft);
+  if(fft){
     if(!fftTimer){ fftTick(); fftTimer=setInterval(fftTick,FFT_REFRESH_MS); }
     if(!fftLogTimer){ fftLogTick(); fftLogTimer=setInterval(fftLogTick,1000); }
   } else {

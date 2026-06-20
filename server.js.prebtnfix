@@ -877,13 +877,11 @@ function fftReadLive(src, p) {                                      // FIFO live
     fftState[src] = st;
   }
   var chunk = Buffer.allocUnsafe(1 << 16);
-  var drained = 0;                                                  // borne le drain par appel : sinon une FIFO alimentée
-  while (drained < FFT_MAXB) {                                       // en continu ne renvoie jamais EAGAIN -> event loop gele
+  while (true) {
     var nread;
     try { nread = fs.readSync(st.fd, chunk, 0, chunk.length, null); }
     catch (e) { if (e.code === 'EAGAIN') break; throw e; }
     if (nread <= 0) break;
-    drained += nread;
     st.buf = Buffer.concat([st.buf, chunk.subarray(0, nread)]);
     if (st.buf.length > FFT_MAXB) st.buf = Buffer.from(st.buf.subarray(st.buf.length - FFT_MAXB));
   }
