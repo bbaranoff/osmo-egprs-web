@@ -763,7 +763,7 @@ AudioBridge.prototype._start = function() {
                      { env: env, stdio: ['ignore', 'pipe', 'pipe'] });
   this.ffmpeg = spawn('ffmpeg', ['-nostdin', '-hide_banner', '-loglevel', 'error',
                       '-f', 's16le', '-ar', '8000', '-ac', '1', '-i', 'pipe:0',
-                      '-c:a', 'libmp3lame', '-b:a', AUDIO_BITRATE, '-ar', '8000', '-ac', '1',
+                      '-c:a', 'libmp3lame', '-b:a', AUDIO_BITRATE, '-ar', '44100', '-ac', '1',
                       '-fflags', '+nobuffer', '-flush_packets', '1', '-f', 'mp3', 'pipe:1'],
                      { stdio: ['pipe', 'pipe', 'pipe'] });
   this.parec.stdout.pipe(this.ffmpeg.stdin);
