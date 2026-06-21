@@ -10,7 +10,27 @@
       "Bash(docker exec fft-itest node -e ' *)",
       "Bash(docker rm *)",
       "Bash(cp server.js server/server.js)",
-      "Bash(printf '\\\\x1b[32mGREEN ok\\\\x1b[0m line1\\\\n\\\\x1b[1;31mBOLD RED err\\\\x1b[0m line2\\\\nplain line3\\\\n')"
+      "Bash(printf '\\\\x1b[32mGREEN ok\\\\x1b[0m line1\\\\n\\\\x1b[1;31mBOLD RED err\\\\x1b[0m line2\\\\nplain line3\\\\n')",
+      "Bash(find / -name 'start-direct.sh')",
+      "Bash(find / -type d -name 'osmo_egprs')",
+      "Bash(docker exec *)",
+      "Read(//tmp/**)",
+      "Bash(ldd --version)",
+      "Bash(ldd /usr/bin/node)",
+      "Read(//usr/bin/**)",
+      "Bash(rm -rf /tmp/oeweb)",
+      "Bash(mkdir -p /tmp/oeweb/web)",
+      "Bash(cp server.js /tmp/oeweb/server.js)",
+      "Bash(cp server/package.json /tmp/oeweb/package.json)",
+      "Bash(cp web/index.html /tmp/oeweb/web/)",
+      "Bash(docker cp *)",
+      "Bash(docker inspect *)",
+      "Bash(docker port *)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} \\(%{size_download} bytes\\) en %{time_total}s\\\\n\" --max-time 6 http://172.20.0.11:8080/)",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)",
+      "Bash(awk '{print \"  ahead\\(local-only\\)=\"$1\"  behind\\(origin-only\\)=\"$2}')",
+      "Bash(git merge *)"
     ]
   }
 }
