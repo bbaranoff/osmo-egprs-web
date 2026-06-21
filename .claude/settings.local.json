@@ -30,7 +30,9 @@
       "Bash(git fetch *)",
       "Bash(git rev-list *)",
       "Bash(awk '{print \"  ahead\\(local-only\\)=\"$1\"  behind\\(origin-only\\)=\"$2}')",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "Bash(chmod +x /home/nirvana/osmo-egprs-web/install-web-service.sh)",
+      "Bash(bash -n /home/nirvana/osmo-egprs-web/install-web-service.sh)"
     ]
   }
 }
