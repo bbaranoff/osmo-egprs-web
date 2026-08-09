@@ -422,10 +422,7 @@
   <!-- FFT view (MS & BTS) — données proxidées vers fft_web.py via /psd -->
   <div id="fft-view" style="display:none;position:relative;isolation:isolate">
     <iframe id="fft-frame" style="display:none;width:100%;height:100%;border:0;background:var(--term-bg)"></iframe>
-    <!-- [2026-08-09] CALQUE SUPPRIME : fft_diff.html etait superpose ici en
-         iframe rotee a 180deg. Il affichait son texte a l envers et miroitait son
-         axe des frequences ; sans rotation il doublonnait la page. La comparaison
-         MS/BTS reste en plein ecran dans l onglet FFT 3. -->
+    <iframe id="fft-overlay" title="Δ MS−BTS superposé" style="display:none;position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(180deg);transform-origin:center center;width:100%;height:100%;border:0;background:transparent;opacity:0.7;mix-blend-mode:screen;pointer-events:none;z-index:5"></iframe>
     <div class="fft-row" id="fft-native">
       <div class="fft-card">
         <div class="fft-t" id="t-ms">MS</div>
@@ -563,25 +560,17 @@ function fftDrawPsd(src,d){var c=document.getElementById('c-'+src),x=c.getContex
  x.strokeStyle='#16222b';x.lineWidth=1;for(var g=0;g<=4;g++){var yy=H*g/4;x.beginPath();x.moveTo(0,yy);x.lineTo(W,yy);x.stroke();}
  x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.strokeStyle='#243845';x.stroke();
  x.strokeStyle='#2aa198';x.lineWidth=2;x.beginPath();
- var _z=Math.min(1, window.__fftzoom||1);
- for(var i=0;i<n;i++){var xx=W*0.5+((i/(n-1))-0.5)*W*_z,yy=H-(p[i]-mn)/rg*H*0.9-H*0.05;
-  if(window.__fftflip) yy=H-yy;                 /* /fftcfg?flip=1 */
-  i?x.lineTo(xx,yy):x.moveTo(xx,yy);}
+ for(var i=0;i<n;i++){var xx=W*i/(n-1),yy=H-(p[i]-mn)/rg*H*0.9-H*0.05;i?x.lineTo(xx,yy):x.moveTo(xx,yy);}
  x.stroke();}
 function fftDrawWf(src,d){var c=document.getElementById('w-'+src),x=c.getContext('2d');
  var p=d.psd,n=p.length;if(!n)return;
  if(c.width!==n){c.width=n;c.height=160;x.fillStyle='#060a0e';x.fillRect(0,0,n,c.height);}
- /* Sens pilote par /fftcfg?dir=up|down. */
- var _up = (window.__fftdir === 'up');
- x.drawImage(c,0,_up ? -1 : 1);
+ x.drawImage(c,0,-1);                       // scroll vers le haut d'1px
  var mn=Math.min.apply(null,p),mx=Math.max.apply(null,p),rg=(mx-mn)||1;
  var row=x.createImageData(n,1);
  for(var i=0;i<n;i++){var col=fftCmap((p[i]-mn)/rg),o=i*4;row.data[o]=col[0];row.data[o+1]=col[1];row.data[o+2]=col[2];row.data[o+3]=255;}
- x.putImageData(row,0,_up ? (c.height-1) : 0);}
-function fftDraw(src,d){ if(d&&typeof d.wfdir==='string') window.__fftdir=d.wfdir;
- if(d&&typeof d.zoom==='number'&&d.zoom>0) window.__fftzoom=d.zoom;
- if(d&&typeof d.flip==='boolean') window.__fftflip=d.flip;
-var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
+ x.putImageData(row,0,c.height-1);}         // nouvelle ligne en bas
+function fftDraw(src,d){var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
  if(d.error){e.textContent=d.error;tt.textContent=d.label||'';return;} e.textContent='';
  tt.textContent=d.label+'  •  ARFCN '+d.arfcn+'  •  Fs '+(d.rate/1e6).toFixed(3)+' MHz';
  fftDrawPsd(src,d);fftDrawWf(src,d);}
@@ -634,7 +623,10 @@ function switchView(v){
     if(frameSrc){ if(frm.getAttribute('src')!==frameSrc) frm.setAttribute('src',frameSrc); frm.style.display=''; }
     else frm.style.display='none';
   }
-  /* [2026-08-09] plus de calque : l element n existe plus, ovl vaut null. */
+  if(ovl){                                                     // FFT 3 superposee DANS FFT 2 : transparente, centree H, rotee 180deg
+    if(v==='fft2'){ if(ovl.getAttribute('src')!=='fft_diff.html') ovl.setAttribute('src','fft_diff.html'); ovl.style.display=''; }
+    else ovl.style.display='none';
+  }
   if(native){                                                  // les timers natifs ne tournent que pour FFT 1 ; 2/3 pollent eux-memes
     if(!fftTimer){ fftTick(); fftTimer=setInterval(fftTick,FFT_REFRESH_MS); }
     if(!fftLogTimer){ fftLogTick(); fftLogTimer=setInterval(fftLogTick,1000); }

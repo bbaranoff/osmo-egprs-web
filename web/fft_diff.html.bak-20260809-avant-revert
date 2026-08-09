@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Calypso FFT — Δ|BTS−MS| entre waterfalls</title>
+<title>Calypso FFT — Δ|MS−BTS| entre waterfalls</title>
 <style>
   :root{
     --bg:#0a1622; --sep:#06101a; --grid:#13283a; --grid2:#1c3850;
@@ -41,35 +41,16 @@
   .seam{height:1px; background:var(--sep); flex:0 0 auto}
   footer{flex:0 0 auto; padding:4px 14px; border-top:1px solid var(--sep); color:var(--muted); font-size:10.5px}
   footer code{color:var(--diff)}
-
-  /* [2026-08-09] Barre de reglages : palette / intensite / zoom / sens.
-     Les reglages vivent sur le SERVEUR (/fftcfg) et non dans la page : les deux
-     pages FFT et la console partagent donc le meme etat, et un rechargement ne
-     le perd pas. La barre ne fait que le lire et le pousser. */
-  .fftctl{display:inline-flex;align-items:center;gap:8px;margin-left:auto;
-          font:11px ui-monospace,Menlo,Consolas,monospace;color:#5a8a86}
-  .fftctl label{display:inline-flex;align-items:center;gap:4px}
-  .fftctl select,.fftctl button{background:#0e1c2a;color:#74e0d0;border:1px solid #1c3850;
-          border-radius:5px;padding:2px 6px;font:inherit;cursor:pointer}
-  .fftctl input[type=range]{width:80px;accent-color:#5fd0c8;cursor:pointer}
-  .fftctl b{color:#74e0d0;font-weight:600;min-width:34px;display:inline-block;text-align:right}
 </style>
 </head>
 <body>
 <header>
-  <h1>📡 Calypso FFT <small>— Δ|BTS−MS| (dB) entre waterfalls</small></h1>
+  <h1>📡 Calypso FFT <small>— Δ|MS−BTS| (dB) entre waterfalls</small></h1>
   <div class="legend">
     <span class="lg ms"><span class="sw"></span><b>MS</b> wf <span class="st" id="st-ms">—</span></span>
     <span class="lg diff"><span class="sw"></span><b>Δ</b> |MS−BTS|</span>
     <span class="lg bts"><span class="sw"></span><b>BTS</b> wf <span class="st" id="st-bts">—</span></span>
   </div>
-  <span class="fftctl">
-  <label>palette <select id="c-pal"></select></label>
-  <label>intensité <input id="c-dr" type="range" min="10" max="90" step="5"><b id="c-drv">40</b></label>
-  <label>zoom <select id="c-zoom"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
-  <button id="c-dir" title="sens de défilement de la CASCADE">cascade ↓</button>
-  <button id="c-flip" title="retourne la COURBE de spectre">spectre ↑</button>
-</span>
 </header>
 
 <main>
@@ -81,7 +62,7 @@
   <canvas class="wf"   id="wf-bts"></canvas>
   <div class="lbl" id="lbl-bts">BTS — <b>DL relay LIVE</b> · <span class="arf">ARFCN 514</span></div>
 </main>
-<footer>Δ = <code>|psd(bts) − psd(ms)|</code> par bin (dB) · ≈0 = canal transparent, pics = divergence · live ← /psd?src=ms|bts</footer>
+<footer>Δ = <code>|psd(ms) − psd(bts)|</code> par bin (dB) · ≈0 = canal transparent, pics = divergence · live ← /psd?src=ms|bts</footer>
 
 <script>
 "use strict";
@@ -89,45 +70,23 @@ const DPR = Math.min(window.devicePixelRatio || 1, 2);
 const clamp01 = v => v<0?0:v>1?1:v;
 
 /* turbo colormap LUT */
-/* [2026-08-09] PALETTES PILOTEES PAR LE SERVEUR (/fftcfg, defaut inferno).
- * turbo garde sa formule d origine ; inferno/magma/viridis sont interpolees sur
- * les ancres matplotlib et sont PERCEPTUELLEMENT UNIFORMES — une variation egale
- * de dB donne une variation egale a l oeil, la ou l arc-en-ciel fabrique des
- * frontieres de teinte que les donnees n ont pas. */
-const PAL_ANCHORS = {
-  inferno: [[0,0,4],[22,11,57],[66,10,104],[106,23,110],[147,38,103],[188,55,84],[221,81,58],[243,120,25],[252,255,164]],
-  magma:   [[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[251,135,97],[254,194,135],[252,253,191]],
-  viridis: [[68,1,84],[72,40,120],[62,74,137],[49,104,142],[38,130,142],[31,158,137],[53,183,121],[109,205,89],[253,231,37]],
-  gray:    [[0,0,0],[32,32,32],[64,64,64],[96,96,96],[128,128,128],[160,160,160],[192,192,192],[224,224,224],[255,255,255]]
-};
-function _palTurbo(){ const l=new Uint8Array(768), cb=v=>(v<0?0:v>255?255:v|0);
-  for(let i=0;i<256;i++){ const x=i/255,x2=x*x,x3=x2*x,x4=x2*x2,x5=x4*x;
-    l[i*3]  =cb((0.13572138+4.6153926*x-42.66032258*x2+132.13108234*x3-152.94239396*x4+59.28637943*x5)*255);
-    l[i*3+1]=cb((0.09140261+2.19418839*x+4.84296658*x2-14.18503333*x3+4.27729857*x4+2.82956604*x5)*255);
-    l[i*3+2]=cb((0.1066733+12.64194608*x-60.58204836*x2+110.36276771*x3-89.90310912*x4+27.34824973*x5)*255);
-  } return l; }
-function _palAnch(A){ const l=new Uint8Array(768), sg=A.length-1;
-  for(let i=0;i<256;i++){ const t=i/255*sg, k=Math.min(sg-1,t|0), f=t-k;
-    for(let c=0;c<3;c++) l[i*3+c]=(A[k][c]*(1-f)+A[k+1][c]*f+0.5)|0; } return l; }
-const _PALC = {};
-function makePalette(n){ n=(n||'inferno').toLowerCase();
-  if(_PALC[n]) return _PALC[n];
-  return _PALC[n] = (n==='turbo') ? _palTurbo() : _palAnch(PAL_ANCHORS[n]||PAL_ANCHORS.inferno); }
-let TURBO = makePalette('inferno');
-let SRV = { palette:'inferno', dr:40, wfdir:'down', flip:false, zoom:1 };
-/* [2026-08-09] DEZOOM (<1) : cote serveur il n y a rien de plus large que la
- * bande complete, donc 0.5x et 0.25x n y font rien. Ici, en revanche, ils ont
- * un sens : on trace la bande ENTIERE sur une fraction de la largeur, centree,
- * avec des marges. zx vaut 1 des que zoom>=1 (au-dela c est le serveur qui
- * rogne, la largeur reste pleine). */
-function zx(){ return Math.min(1, SRV.zoom || 1); }
-function applySrvCfg(j){ if(!j) return;
-  if(j.palette && j.palette!==SRV.palette){ SRV.palette=j.palette; TURBO=makePalette(j.palette); }
-  if(typeof j.dr==='number' && j.dr>0) SRV.dr=j.dr;
-  if(typeof j.wfdir==='string' && j.wfdir) SRV.wfdir=j.wfdir;
-  if(typeof j.flip==='boolean') SRV.flip=j.flip;
-  if(typeof j.zoom==='number' && j.zoom>0) SRV.zoom=j.zoom; }
-
+/* [2026-08-09] PALETTE : turbo (arc-en-ciel) -> inferno.
+ * L'arc-en-ciel introduit des FRONTIERES DE TEINTE la ou le signal est continu :
+ * l'oeil lit une marche entre le vert et le jaune qui n'existe pas dans les
+ * donnees, et le bleu sombre du bas de rampe se confond avec le fond marine de
+ * la page. Inferno est perceptuellement uniforme — la clarte croit de facon
+ * monotone — donc une variation egale de dB donne une variation egale a l'oeil,
+ * et son noir-violet de depart se distingue du fond.
+ * Interpolation lineaire sur les 9 ancres de la rampe matplotlib. */
+const TURBO = (() => {
+  const A = [[0,0,4],[22,11,57],[66,10,104],[106,23,110],[147,38,103],
+             [188,55,84],[221,81,58],[243,120,25],[252,255,164]];
+  const lut = new Uint8Array(256*3), seg = A.length - 1;
+  for (let i=0;i<256;i++){
+    const t = i/255*seg, k = Math.min(seg-1, t|0), f = t-k;
+    for (let c=0;c<3;c++) lut[i*3+c] = (A[k][c]*(1-f) + A[k+1][c]*f + 0.5)|0;
+  } return lut;
+})();
 function resample(src,w){ const n=src.length; if(n===w) return src;
   const o=new Float32Array(w);
   for(let x=0;x<w;x++){ const p=x/(w-1)*(n-1), i=p|0, f=p-i; o[x]= i+1<n ? src[i]*(1-f)+src[i+1]*f : src[i]; }
@@ -135,18 +94,36 @@ function resample(src,w){ const n=src.length; if(n===w) return src;
 }
 
 /* ---- waterfall (normalisé 0..1 sur 60 dB sous le max) ---- */
-let PSD_DR = 40;   /* pilote par /fftcfg (SRV.dr) */
+/* [2026-08-09] CONTRASTE : 60 dB de plage etalaient la rampe de couleur sur une
+ * dynamique que le signal n'occupe jamais — tout se tassait dans le bleu-vert et
+ * une variation de 5 dB ne se voyait pas. 35 dB collent a la dynamique reelle
+ * d'un canal GSM et font ressortir l'evolution. Remonter si ca sature. */
+const PSD_DR = 35;
+/* Graduation temporelle : une ligne sur TICK_ROWS est eclaircie, ce qui donne
+ * une regle qui defile avec les donnees. Sans elle, un waterfall qui bouge peu
+ * est indistinguable d'un waterfall fige. */
+const TICK_ROWS = 25;
+const TICK_PX = 6;
 class WF {
   /* up : defiler vers le haut (ligne neuve en bas). Utilise par le waterfall
      PLACE AU-DESSUS du plot, pour que le present soit colle au plot. */
   constructor(id, up){ this.c=document.getElementById(id); this.x=this.c.getContext('2d');
-    this.W=2;this.H=2; this.up=!!up; this.resize(); }
+    this.W=2;this.H=2; this.up=!!up; this.n=0; this.resize(); }
   resize(){
     const w=Math.max(2,this.c.clientWidth|0), h=Math.max(2,this.c.clientHeight|0);
     const prev=(this.c.width&&this.c.height)?this.x.getImageData(0,0,this.c.width,this.c.height):null;
     this.c.width=w; this.c.height=h; this.W=w; this.H=h;
     this.x.fillStyle='#04101c'; this.x.fillRect(0,0,w,h);
-    if(prev) this.x.putImageData(prev,0,0);
+    /* [2026-08-09] ANCRAGE DU CONTENU RESTAURE. C'etait putImageData(prev,0,0)
+     * inconditionnel : l'ancien contenu revenait en HAUT alors que les lignes
+     * neuves arrivent en haut aussi. Sur un agrandissement, l'ecart entre les
+     * deux laissait une BANDE NOIRE qui mettait TICK_ROWS*N rafraichissements a
+     * se combler — c'est la grande zone vide visible sur la capture. On ancre
+     * du cote ou l'historique doit rester : en haut quand on ecrit en haut. */
+    if(prev){
+      const dy = this.up ? (h - prev.height) : 0;
+      this.x.putImageData(prev, 0, dy < 0 ? 0 : dy);
+    }
     this._row=this.x.createImageData(w,1);
   }
   push(psd){
@@ -167,7 +144,15 @@ class WF {
     const H = this.c.height;
     this.x.drawImage(this.c, 0, this.up ? -1 : 1);
     const d=this._row.data;
+    /* Graduation temporelle : une ENCOCHE de TICK_PX pixels au bord gauche, une
+     * ligne sur TICK_ROWS. [2026-08-09] La premiere version eclaircissait TOUTE
+     * la ligne de 50 % vers le blanc : sur un waterfall dont l'essentiel est du
+     * fond sombre, ca peignait des bandes BRUNES en travers de toute la largeur
+     * et noyait les couleurs. Une regle se lit au bord, pas en travers du
+     * signal. */
+    const tick = (++this.n % TICK_ROWS) === 0;
     for(let xx=0;xx<W;xx++){ const o=((clamp01(m[xx])*255)|0)*3, p=xx*4;
+      if(tick && xx < TICK_PX){ d[p]=150; d[p+1]=180; d[p+2]=210; d[p+3]=255; continue; }
       d[p]=TURBO[o]; d[p+1]=TURBO[o+1]; d[p+2]=TURBO[o+2]; d[p+3]=255; }
     this.x.putImageData(this._row, 0, this.up ? H-1 : 0);
   }
@@ -187,12 +172,7 @@ function computeDiff(){
   if(!a||!b||!a.psd||!b.psd) return null;
   const n=Math.min(a.psd.length,b.psd.length);
   const freqs=a.freqs, diff=new Float32Array(n);
-  /* [2026-08-09] SENS DE LA SOUSTRACTION CORRIGE : bts - ms, pas ms - bts.
-   * C est ici que se joue le « a l envers » de FFT 3, et nulle part ailleurs :
-   * cette page ne trace pas un spectre mais une DIFFERENCE, donc son signe est
-   * une propriete du calcul. Le corriger a l affichage retournait les deux
-   * autres FFT, qui elles etaient justes. */
-  for(let i=0;i<n;i++) diff[i]=b.psd[i]-a.psd[i];   // signe : <0 jaune, >0 mauve
+  for(let i=0;i<n;i++) diff[i]=a.psd[i]-b.psd[i];   // signe : <0 jaune, >0 mauve
   return { freqs, diff, n };
 }
 function drawDiff(){
@@ -203,10 +183,8 @@ function drawDiff(){
   const f0 = D?D.freqs[0]:-542, f1 = D?D.freqs[D.n-1]:542;
   // axe Y : 0..max(Δ) snap 10 dB
   let ymax=10; if(D){ let mx=0; for(let i=0;i<D.n;i++){ const av=Math.abs(D.diff[i]); if(av>mx)mx=av; } ymax=Math.max(10,Math.ceil((mx+2)/10)*10); }
-  const _cx=(px0+px1)/2, _z=zx();
-  const mapX=f=>_cx + ((px0+(f-f0)/(f1-f0)*(px1-px0)) - _cx) * _z;
-  const mapY=v=>{ const y=py0+(ymax-v)/(2*ymax)*(py1-py0);   // 0 au centre, + en haut
-                  return SRV.flip ? (py0+py1-y) : y; };      /* /fftcfg?flip=1 */
+  const mapX=f=>px0+(f-f0)/(f1-f0)*(px1-px0);
+  const mapY=v=>py0+(ymax-v)/(2*ymax)*(py1-py0);     // 0 au centre, + en haut, - en bas
   // grille Y (dB)
   ctx.font='10px ui-monospace,monospace'; ctx.textBaseline='middle'; ctx.textAlign='right';
   for(let v=-ymax;v<=ymax+0.1;v+=10){ const y=mapY(v);
@@ -246,8 +224,7 @@ function loop(){ drawDiff(); requestAnimationFrame(loop); }
 async function pollPsd(ch){
   try{
     const r=await fetch('/psd?src='+ch,{cache:'no-store'});
-    const j=await r.json(); applySrvCfg(j); PSD_DR = SRV.dr;
-    { const u=(SRV.wfdir==='up'); if(wf.ms) wf.ms.up=u; if(wf.bts) wf.bts.up=u; }
+    const j=await r.json();
     const st=document.getElementById('st-'+ch);
     if(!j||j.error||!Array.isArray(j.psd)||!j.psd.length){ latest[ch]=null; if(st)st.textContent='(pas de flux)'; return; }
     latest[ch]=j; if(st)st.textContent='ARFCN '+(j.arfcn||'514')+' · LIVE';
@@ -258,38 +235,20 @@ async function pollPsd(ch){
 window.addEventListener('resize',()=>{ clearTimeout(window._ro); window._ro=setTimeout(()=>{ wf.ms.resize(); wf.bts.resize(); presize(); },120); });
 /* MS est AU-DESSUS du plot -> defile vers le haut ; BTS est en dessous ->
    defile vers le bas. Le present reste colle au plot des deux cotes. */
-wf.ms=new WF('wf-ms', true); wf.bts=new WF('wf-bts', false); presize();
+/* [2026-08-09] LES DEUX CASCADES DEFILENT DESORMAIS DANS LE MEME SENS.
+ * Le miroir du 08/08 (haut en up=true) collait le « maintenant » au plot des
+ * deux cotes, mais il oblige l'oeil a lire le temps dans un sens en haut et
+ * dans l'autre en bas — et il donnait la bande noire au-dessus du waterfall du
+ * haut apres un redimensionnement. Sens conventionnel partout : le plus recent
+ * EN HAUT, l'historique descend, comme gqrx et GNU Radio.
+ * Pour retrouver le miroir : repasser le premier argument a true. */
+/* [2026-08-09] INVERSE sur demande : les deux cascades defilent vers le HAUT,
+ * ligne neuve EN BAS. (Le sens precedent — neuve en haut — ne donnait pas le
+ * rendu attendu a l'ecran.) Pour revenir : repasser les deux a false. */
+wf.ms=new WF('wf-ms', true); wf.bts=new WF('wf-bts', true); presize();
 loop();
 setInterval(()=>{ pollPsd('ms'); pollPsd('bts'); },150);
 pollPsd('ms'); pollPsd('bts');
-
-/* ---- barre de reglages : lit /fftcfg, pousse les changements ------------- */
-(function(){
-  var pal=document.getElementById('c-pal'), dr=document.getElementById('c-dr'),
-      drv=document.getElementById('c-drv'), zm=document.getElementById('c-zoom'),
-      dir=document.getElementById('c-dir'), flip=document.getElementById('c-flip');
-  if(!pal) return;
-  function paint(c){
-    if(!c) return;
-    if(pal.options.length===0 && c.palettes)
-      c.palettes.forEach(function(p){ var o=document.createElement('option');
-        o.value=p; o.textContent=p; pal.appendChild(o); });
-    pal.value=c.palette; dr.value=c.dr; drv.textContent=c.dr; zm.value=String(c.zoom||1);
-    dir.textContent = (c.wfdir==='up') ? 'cascade ↑' : 'cascade ↓';
-    dir.dataset.dir = c.wfdir||'down';
-    if(flip){ flip.textContent = c.flip ? 'spectre ↓' : 'spectre ↑';
-              flip.dataset.flip = c.flip ? '1' : '0'; }
-  }
-  function push(q){ fetch('/fftcfg?'+q,{cache:'no-store'})
-      .then(function(r){return r.json();}).then(paint).catch(function(){}); }
-  fetch('/fftcfg',{cache:'no-store'}).then(function(r){return r.json();}).then(paint).catch(function(){});
-  pal.onchange=function(){ push('palette='+encodeURIComponent(pal.value)); };
-  zm.onchange =function(){ push('zoom='+encodeURIComponent(zm.value)); };
-  dr.oninput  =function(){ drv.textContent=dr.value; };
-  dr.onchange =function(){ push('dr='+encodeURIComponent(dr.value)); };
-  dir.onclick =function(){ push('dir='+(dir.dataset.dir==='up'?'down':'up')); };
-  if(flip) flip.onclick=function(){ push('flip='+(flip.dataset.flip==='1'?'0':'1')); };
-})();
 </script>
 </body>
 </html>

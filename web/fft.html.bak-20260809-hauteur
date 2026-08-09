@@ -82,8 +82,6 @@
   <span class="fftctl">
   <label>palette <select id="c-pal"></select></label>
   <label>intensité <input id="c-dr" type="range" min="10" max="90" step="5"><b id="c-drv">40</b></label>
-  <label>gain <input id="c-gain" type="range" min="5" max="98" step="1"><b id="c-gainv">85</b></label>
-  <label>hauteur <input id="c-ofs" type="range" min="0" max="90" step="1"><b id="c-ofsv">12</b></label>
   <label>zoom <select id="c-zoom"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
   <button id="c-dir" title="sens de défilement de la CASCADE">cascade ↓</button>
   <button id="c-flip" title="retourne la COURBE de spectre">spectre ↑</button>
@@ -139,7 +137,7 @@ function makePalette(n){ n=(n||'inferno').toLowerCase();
   if(_PALC[n]) return _PALC[n];
   return _PALC[n] = (n==='turbo') ? _palTurbo() : _palAnch(PAL_ANCHORS[n]||PAL_ANCHORS.inferno); }
 let TURBO = makePalette('inferno');
-let SRV = { palette:'inferno', dr:40, wfdir:'down', flip:false, zoom:1, gain:0.85, ofs:0.12 };
+let SRV = { palette:'inferno', dr:40, wfdir:'down', flip:false, zoom:1 };
 /* [2026-08-09] DEZOOM (<1) : cote serveur il n y a rien de plus large que la
  * bande complete, donc 0.5x et 0.25x n y font rien. Ici, en revanche, ils ont
  * un sens : on trace la bande ENTIERE sur une fraction de la largeur, centree,
@@ -152,9 +150,7 @@ function applySrvCfg(j){ if(!j) return;
   if(typeof j.dr==='number' && j.dr>0) SRV.dr=j.dr;
   if(typeof j.wfdir==='string' && j.wfdir) SRV.wfdir=j.wfdir;
   if(typeof j.flip==='boolean') SRV.flip=j.flip;
-  if(typeof j.zoom==='number' && j.zoom>0) SRV.zoom=j.zoom;
-  if(typeof j.gain==='number') SRV.gain=j.gain;
-  if(typeof j.ofs==='number') SRV.ofs=j.ofs; }
+  if(typeof j.zoom==='number' && j.zoom>0) SRV.zoom=j.zoom; }
 
 
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -231,24 +227,12 @@ class Panel {
     ctx.strokeStyle = 'rgba(95,208,200,0.10)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
     // trace
-    /* [2026-08-09] DEZOOM REEL + GAIN + TRANSLATION.
-     * Avant, la boucle balayait l ecran de 0 a W et echantillonnait mags par
-     * index : la courbe occupait donc TOUJOURS toute la largeur et le reglage
-     * zoom<1 n avait aucun effet — xmap etait defini mais jamais appele, c est
-     * pour ca que « 0.25x ne marche pas ». On trace desormais dans la fenetre
-     * [x0, x0+xw[ et on y projette la bande complete.
-     * gain = hauteur du trace, ofs = translation verticale ; separes pour qu on
-     * puisse deplacer la cloche sans la deformer. */
-    const _z  = zx();
-    const _x0 = Math.round(W*0.5 - W*_z/2), _xw = Math.max(2, Math.round(W*_z));
-    const _g  = SRV.gain, _o = SRV.ofs;
     ctx.beginPath();
-    for (let k = 0; k < _xw; k++){
-      const xx = _x0 + k;
-      const v = mags[(k/(_xw-1)*(N-1))|0] || 0;
-      let y = H - clamp01(v)*(H*_g) - H*_o;
-      if (SRV.flip) y = H - y;
-      k ? ctx.lineTo(xx,y) : ctx.moveTo(xx,y);
+    for (let x = 0; x < W; x++){
+      const v = mags[(x/(W-1)*(N-1))|0] || 0;
+      let y = H - clamp01(v)*(H*0.94) - H*0.03;
+      if (SRV.flip) y = H - y;                 /* retournement vertical (/fftcfg?flip=1) */
+      x ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
     }
     ctx.strokeStyle = 'var(--trace)'; ctx.lineWidth = 1;
     ctx.shadowColor = 'rgba(95,208,200,0.55)'; ctx.shadowBlur = 4;
@@ -263,12 +247,8 @@ class Panel {
     const _up = (SRV.wfdir === 'up');
     this.wc.drawImage(this.wf, 0, _up ? -1 : 1);
     const d = this._row.data;
-    /* Hors fenetre de dezoom : fond du canevas, pas du signal etire. */
     for (let x = 0; x < W; x++){
-      const p = x*4;
-      if (x < _x0 || x >= _x0 + _xw){ d[p]=4; d[p+1]=16; d[p+2]=28; d[p+3]=255; continue; }
-      const src = ((x - _x0)/(_xw - 1) * (W - 1)) | 0;
-      const idx = (clamp01(m[src]) * 255) | 0, o = idx*3;
+      const idx = (clamp01(m[x]) * 255) | 0, o = idx*3, p = x*4;
       d[p]   = TURBO[o]; d[p+1] = TURBO[o+1]; d[p+2] = TURBO[o+2]; d[p+3] = 255;
     }
     this.wc.putImageData(this._row, 0, _up ? (this.wfH - 1) : 0);
@@ -352,9 +332,7 @@ pollPsd('ms'); pollPsd('bts');
 (function(){
   var pal=document.getElementById('c-pal'), dr=document.getElementById('c-dr'),
       drv=document.getElementById('c-drv'), zm=document.getElementById('c-zoom'),
-      dir=document.getElementById('c-dir'), flip=document.getElementById('c-flip'),
-      gn=document.getElementById('c-gain'), gnv=document.getElementById('c-gainv'),
-      of=document.getElementById('c-ofs'),  ofv=document.getElementById('c-ofsv');
+      dir=document.getElementById('c-dir'), flip=document.getElementById('c-flip');
   if(!pal) return;
   function paint(c){
     if(!c) return;
@@ -364,8 +342,6 @@ pollPsd('ms'); pollPsd('bts');
     pal.value=c.palette; dr.value=c.dr; drv.textContent=c.dr; zm.value=String(c.zoom||1);
     dir.textContent = (c.wfdir==='up') ? 'cascade ↑' : 'cascade ↓';
     dir.dataset.dir = c.wfdir||'down';
-    if(gn && typeof c.gain==='number'){ gn.value=Math.round(c.gain*100); gnv.textContent=gn.value; }
-    if(of && typeof c.ofs==='number'){ of.value=Math.round(c.ofs*100); ofv.textContent=of.value; }
     if(flip){ flip.textContent = c.flip ? 'spectre ↓' : 'spectre ↑';
               flip.dataset.flip = c.flip ? '1' : '0'; }
   }
@@ -378,10 +354,6 @@ pollPsd('ms'); pollPsd('bts');
   dr.onchange =function(){ push('dr='+encodeURIComponent(dr.value)); };
   dir.onclick =function(){ push('dir='+(dir.dataset.dir==='up'?'down':'up')); };
   if(flip) flip.onclick=function(){ push('flip='+(flip.dataset.flip==='1'?'0':'1')); };
-  if(gn){ gn.oninput=function(){ gnv.textContent=gn.value; };
-          gn.onchange=function(){ push('gain='+(gn.value/100)); }; }
-  if(of){ of.oninput=function(){ ofv.textContent=of.value; };
-          of.onchange=function(){ push('ofs='+(of.value/100)); }; }
 })();
 </script>
 </body>

@@ -1,7 +1,6 @@
 'use strict';
 const os = require('os');
 const http = require('http');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec, execFile, execFileSync } = require('child_process');
@@ -856,39 +855,6 @@ const FFT_RATE     = parseFloat(process.env.RATE || '1083333');   // Fs natif = 
 const FFT_NSAMP    = parseInt(process.env.NSAMP    || '262144', 10);
 const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit être une puissance de 2
 const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
-
-/* [2026-08-09] RENDU DES WATERFALLS PILOTE PAR LE SERVEUR.
- * Palette, plage dynamique, zoom et sens etaient figes dans chaque page : trois
- * fichiers a editer et un rechargement pour essayer une variante. Ils vivent ici,
- * voyagent dans /psd (que les pages interrogent deja en continu) et se changent
- * A CHAUD via /fftcfg?palette=..&dr=..&zoom=..&dir=..
- * Au lancement : FFT_PALETTE, FFT_DR, FFT_ZOOM, FFT_WF_DIR. */
-var FFT_PALETTE = String(process.env.FFT_PALETTE || 'inferno').toLowerCase();
-var FFT_DR      = parseFloat(process.env.FFT_DR || '40');            // dB sous le max
-var FFT_WF_DIR  = String(process.env.FFT_WF_DIR || 'down').toLowerCase();  // down = neuve EN HAUT
-/* ZOOM : 1 = bande complete. 4 = quart central. Le rognage est fait ICI : les
- * points ecartes ne sont ni serialises ni transportes, donc zoomer ALLEGE le
- * flux, et l axe reste exact puisqu il est produit avec les donnees. */
-var FFT_ZOOM    = Math.max(0.25, Math.min(64, parseFloat(process.env.FFT_ZOOM || '1')));
-/* [2026-08-09] FLIP = retournement VERTICAL de la COURBE de spectre (pas de la
- * cascade : celle-la a son propre reglage, wfdir). Les deux etaient confondus
- * sous le mot « a l envers » et j ai corrige six fois le mauvais objet. */
-/* [2026-08-09] Defaut REMIS A 0. Le retournement avait ete active pour redresser
- * FFT 3 — mais FFT 3 est une SOUSTRACTION psd(bts)-psd(ms) : son sens se corrige
- * dans le calcul, pas a l affichage. Retourner la courbe mettait a l envers les
- * deux autres FFT, qui elles etaient justes. Le bouton reste, en secours. */
-var FFT_FLIP    = String(process.env.FFT_FLIP || '0') === '1';
-/* GAIN = hauteur du trace en fraction du cadre. OFS = translation verticale,
- * meme unite. Separes a dessein : monter le gain deforme la cloche, la
- * translater ne fait que la deplacer — deux besoins distincts qu'un seul
- * reglage confondait. Garde-fou : gain+ofs est borne a 0.98 cote page, sinon
- * la crete sort du cadre. */
-var FFT_GAIN    = Math.max(0.05, Math.min(0.98, parseFloat(process.env.FFT_GAIN || '0.85')));
-var FFT_OFS     = Math.max(0.00, Math.min(0.90, parseFloat(process.env.FFT_OFS  || '0.12')));
-const FFT_PALETTES = ['turbo','inferno','magma','viridis','gray'];
-function fftCfg(){ return { palette:FFT_PALETTE, dr:FFT_DR, wfdir:FFT_WF_DIR,
-                            zoom:FFT_ZOOM, flip:FFT_FLIP, gain:FFT_GAIN, ofs:FFT_OFS,
-                            palettes:FFT_PALETTES }; }
 const FFT_MAXB     = FFT_NSAMP * 8;                                  // octets gardés (complex64 = 8 o/échantillon)
 const FFT_SRC = {
   ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP (dsp_iq.cfile)' },
@@ -995,13 +961,7 @@ function fftWelch(fl) {                                             // fl: Float
   var half = FFT_NFFT >> 1;
   var step = Math.max(1, (FFT_NFFT / 1024) | 0);                   // sous-échantillonne pour le transport
   var freqs = [], psd = [];
-  /* ZOOM : bins gardes autour du continu. Sous 1 il n y a rien de plus large
-     que la bande complete — 0,5 et 0,25 rendent donc TOUTE la bande, sans
-     rognage. C est une borne physique, pas un choix. */
-  var keep = Math.min(half, Math.max(8, Math.round(half / FFT_ZOOM)));
-  var kLo = half - keep, kHi = half + keep;
   for (var k = 0; k < FFT_NFFT; k += step) {
-    if (k < kLo || k > kHi) continue;
     var srcBin = (k + half) % FFT_NFFT;                            // fftshift
     freqs.push(Math.round((k - half) * FFT_RATE / FFT_NFFT / 1e3 * 10) / 10);   // kHz, 1 décimale
     psd.push(Math.round((10 * Math.log10(acc[srcBin] / nseg + 1e-12)) * 100) / 100);
@@ -1016,9 +976,7 @@ function psdJson(src) {
     var fl = fftIsFifo(s.path) ? fftReadLive(src, s.path) : fftReadTail(s.path);
     var r = fl ? fftWelch(fl) : null;
     if (!r) return { error: "flux pas encore prêt (pas assez d'échantillons)", label: s.label };
-    return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd,
-             palette: FFT_PALETTE, dr: FFT_DR, wfdir: FFT_WF_DIR, zoom: FFT_ZOOM,
-             flip: FFT_FLIP, gain: FFT_GAIN, ofs: FFT_OFS };
+    return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd };
   } catch (e) {
     if (e && e.code === 'ENOENT') return { error: 'source absente (' + s.path + ') — lance la stack', label: s.label };
     return { error: String((e && e.message) || e), label: s.label };
@@ -1067,36 +1025,12 @@ const httpServer = http.createServer(function(req, res) {
     audioBridge.pipeToClient(res);
     return;
   }
-  if (req.url.split('?')[0] === '/fftcfg') {        // lecture ET reglage a chaud
-    var qs = new URLSearchParams(req.url.split('?')[1] || '');
-    var pal = (qs.get('palette') || '').toLowerCase();
-    var dr = parseFloat(qs.get('dr')), zm = parseFloat(qs.get('zoom'));
-    if (pal && FFT_PALETTES.indexOf(pal) >= 0) FFT_PALETTE = pal;
-    if (isFinite(dr)) FFT_DR = Math.max(6, Math.min(120, dr));
-    if (isFinite(zm)) FFT_ZOOM = Math.max(0.25, Math.min(64, zm));
-    if (qs.has('dir')) { var d = (qs.get('dir')||'').toLowerCase();
-      if (d === 'up' || d === 'down') FFT_WF_DIR = d; }
-    if (qs.has('flip')) FFT_FLIP = (qs.get('flip') === '1' || qs.get('flip') === 'true');
-    var gn = parseFloat(qs.get('gain')), of = parseFloat(qs.get('ofs'));
-    if (isFinite(gn)) FFT_GAIN = Math.max(0.05, Math.min(0.98, gn));
-    if (isFinite(of)) FFT_OFS  = Math.max(0.00, Math.min(0.90, of));
-    res.writeHead(200, { 'Content-Type':'application/json', 'Cache-Control':'no-store' });
-    return res.end(JSON.stringify(fftCfg()));
-  }
   var fp = req.url === '/' ? '/index.html' : req.url;
   fp = path.join(webDir, fp);
   var ct = MIME[path.extname(fp)] || 'application/octet-stream';
   fs.readFile(fp, function(err, data) {
     if (err) { res.writeHead(404); return res.end('Not found'); }
-    /* Pas de cache sur html/js/css : le serveur relit a chaque requete, mais le
-       NAVIGATEUR gardait sa copie — des corrections verifiees sur le fil etaient
-       absentes a l ecran. */
-    var h = { 'Content-Type': ct };
-    if (/\.(html|js|css)$/.test(fp)) {
-      h['Cache-Control'] = 'no-store, no-cache, must-revalidate';
-      h['Pragma'] = 'no-cache'; h['Expires'] = '0';
-    }
-    res.writeHead(200, h);
+    res.writeHead(200, { 'Content-Type': ct });
     res.end(data);
   });
 });
@@ -1152,36 +1086,6 @@ wss.on('connection', function(ws, req) {
     log('Client ' + clientId + ' disconnected');
   });
 });
-
-// ─── HTTPS : contexte securise, requis par getUserMedia (bouton micro) ──────
-// getUserMedia n'existe que sur https:// ou http://localhost. Sans ce listener,
-// le pont micro navigateur -> gsm_mic est inaccessible depuis une IP distante.
-// Meme gestionnaire de requetes, meme WebSocket : on ajoute une porte, on ne
-// deplace rien. Certificat auto-signe -> le navigateur avertira une fois.
-const HTTPS_PORT = parseInt(process.env.HTTPS_PORT || '443');
-const TLS_CERT   = process.env.TLS_CERT || '/etc/osmo-web-tls/cert.pem';
-const TLS_KEY    = process.env.TLS_KEY  || '/etc/osmo-web-tls/key.pem';
-var httpsServer = null;
-try {
-  if (fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
-    httpsServer = https.createServer(
-      { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) },
-      httpServer.listeners('request')[0]);
-    // La MEME instance WebSocketServer sert les deux : sinon les clients https
-    // n'auraient pas de WebSocket, donc ni VTY, ni tshark, ni micro.
-    httpsServer.on('upgrade', function(req, sock, head) {
-      wss.handleUpgrade(req, sock, head, function(ws) { wss.emit('connection', ws, req); });
-    });
-    httpsServer.listen(HTTPS_PORT, function() {
-      log('HTTPS sur :' + HTTPS_PORT + ' (certificat auto-signe : le navigateur '
-          + 'avertira une fois ; c\'est ce contexte securise qui autorise le micro)');
-    });
-    httpsServer.on('error', function(e) { log('HTTPS indisponible : ' + e.message); });
-  } else {
-    log('HTTPS non arme : certificat absent (' + TLS_CERT + '). Le bouton micro '
-        + 'restera refuse par le navigateur hors http://localhost.');
-  }
-} catch (e) { log('HTTPS erreur : ' + e.message); }
 
 // ─── Boot ────────────────────────────────────────────────────
 httpServer.listen(PORT, function() {

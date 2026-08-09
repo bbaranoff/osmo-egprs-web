@@ -371,7 +371,6 @@
       <button class="btn" onclick="clearPackets()">Clear</button>
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
       <button class="btn primary" id="audio-btn" onclick="toggleAudio()" title="Écouter l'audio des appels (gsm_audio)">▶ Audio</button>
-      <button class="btn" id="mic-btn" onclick="toggleMic()" title="Parler dans les mobiles : votre micro alimente le sink gsm_mic, que gsm_in capte">🎤 Parler</button>
       <audio id="audio-stream" style="display:none"></audio>
       <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
       <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
@@ -422,10 +421,7 @@
   <!-- FFT view (MS & BTS) — données proxidées vers fft_web.py via /psd -->
   <div id="fft-view" style="display:none;position:relative;isolation:isolate">
     <iframe id="fft-frame" style="display:none;width:100%;height:100%;border:0;background:var(--term-bg)"></iframe>
-    <!-- [2026-08-09] CALQUE SUPPRIME : fft_diff.html etait superpose ici en
-         iframe rotee a 180deg. Il affichait son texte a l envers et miroitait son
-         axe des frequences ; sans rotation il doublonnait la page. La comparaison
-         MS/BTS reste en plein ecran dans l onglet FFT 3. -->
+    <iframe id="fft-overlay" title="Δ MS−BTS superposé" style="display:none;position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(180deg);transform-origin:center center;width:100%;height:100%;border:0;background:transparent;opacity:0.7;mix-blend-mode:screen;pointer-events:none;z-index:5"></iframe>
     <div class="fft-row" id="fft-native">
       <div class="fft-card">
         <div class="fft-t" id="t-ms">MS</div>
@@ -452,79 +448,6 @@
 
 <script>
 // ═══ Theme ═══
-// ─── Micro : navigateur → WebSocket (binaire) → sink gsm_mic ────────────────
-// Le conteneur n'a aucune capture reelle. Avant le 2026-08-08, `gsm_in`
-// retombait sur la source par defaut = gsm_audio.monitor, donc sur la SORTIE
-// des mobiles : ca faisait « du son en entree », mais c'etait l'echo, et ca
-// bouclait (RMS x11 en 10 s). `gsm_in` pointe desormais sur un sink vide, ce
-// qui ouvre la boucle mais rend l'entree muette. Ce bouton la remplit.
-//
-// PIEGE NAVIGATEUR : getUserMedia exige un CONTEXTE SECURISE. En http:// sur
-// une IP distante il echoue, silencieusement pour l'utilisateur. On le dit.
-var micOn = false, micCtx = null, micStream = null, micNode = null, micSrc = null;
-function micFail(m) {
-  micOn = false;
-  var b = document.getElementById('mic-btn');
-  if (b) { b.textContent = '🎤 Parler'; b.classList.remove('primary'); }
-  console.error('mic: ' + m);
-  alert('Micro indisponible : ' + m);
-}
-async function toggleMic() {
-  var btn = document.getElementById('mic-btn');
-  if (micOn) {
-    micOn = false;
-    try { if (micNode) micNode.disconnect(); if (micSrc) micSrc.disconnect(); } catch (e) {}
-    try { if (micStream) micStream.getTracks().forEach(function(t){ t.stop(); }); } catch (e) {}
-    try { if (micCtx) micCtx.close(); } catch (e) {}
-    micCtx = micStream = micNode = micSrc = null;
-    send({ type: 'mic_stop' });
-    btn.textContent = '🎤 Parler'; btn.classList.remove('primary');
-    return;
-  }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    return micFail("getUserMedia absent. La capture micro exige un contexte securise : "
-                 + "servez la page en https://, ou ouvrez-la depuis http://localhost "
-                 + "(un tunnel SSH -L convient).");
-  }
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true,
-               noiseSuppression: true, autoGainControl: true } });
-  } catch (e) { return micFail(e.name + ' — ' + e.message); }
-
-  // 8 kHz demande directement au contexte : c'est le debit du TCH (GSM-FR).
-  // Si le navigateur refuse, on rechantillonne a la main plus bas.
-  try { micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 }); }
-  catch (e) { micCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-  var ratio = micCtx.sampleRate / 8000;
-  micSrc  = micCtx.createMediaStreamSource(micStream);
-  micNode = micCtx.createScriptProcessor(2048, 1, 1);   // deprecie mais universel
-  var acc = 0.0;
-  micNode.onaudioprocess = function(ev) {
-    if (!micOn || !ws || ws.readyState !== 1) return;
-    var inp = ev.inputBuffer.getChannelData(0);
-    var out = new Int16Array(Math.ceil(inp.length / ratio));
-    var n = 0;
-    // Decimation simple. Le TCH est en bande telephonique et le codec FR
-    // filtre au-dessus de 3,4 kHz : un filtre anti-repliement maison
-    // n'apporterait pas grand-chose ici.
-    for (var i = 0; i < inp.length; i++) {
-      acc += 1;
-      if (acc >= ratio) {
-        acc -= ratio;
-        var v = Math.max(-1, Math.min(1, inp[i]));
-        out[n++] = v < 0 ? v * 0x8000 : v * 0x7FFF;
-      }
-    }
-    if (n > 0) ws.send(out.buffer.slice(0, n * 2));
-  };
-  micSrc.connect(micNode);
-  micNode.connect(micCtx.destination);   // requis par Chrome pour cadencer le noeud
-  micOn = true;
-  send({ type: 'mic_start' });
-  btn.textContent = '🔴 Micro ON'; btn.classList.add('primary');
-}
-
 var audioPlaying = false;
 function toggleAudio() {
   var el = document.getElementById('audio-stream'), btn = document.getElementById('audio-btn');
@@ -563,25 +486,17 @@ function fftDrawPsd(src,d){var c=document.getElementById('c-'+src),x=c.getContex
  x.strokeStyle='#16222b';x.lineWidth=1;for(var g=0;g<=4;g++){var yy=H*g/4;x.beginPath();x.moveTo(0,yy);x.lineTo(W,yy);x.stroke();}
  x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.strokeStyle='#243845';x.stroke();
  x.strokeStyle='#2aa198';x.lineWidth=2;x.beginPath();
- var _z=Math.min(1, window.__fftzoom||1);
- for(var i=0;i<n;i++){var xx=W*0.5+((i/(n-1))-0.5)*W*_z,yy=H-(p[i]-mn)/rg*H*0.9-H*0.05;
-  if(window.__fftflip) yy=H-yy;                 /* /fftcfg?flip=1 */
-  i?x.lineTo(xx,yy):x.moveTo(xx,yy);}
+ for(var i=0;i<n;i++){var xx=W*i/(n-1),yy=H-(p[i]-mn)/rg*H*0.9-H*0.05;i?x.lineTo(xx,yy):x.moveTo(xx,yy);}
  x.stroke();}
 function fftDrawWf(src,d){var c=document.getElementById('w-'+src),x=c.getContext('2d');
  var p=d.psd,n=p.length;if(!n)return;
  if(c.width!==n){c.width=n;c.height=160;x.fillStyle='#060a0e';x.fillRect(0,0,n,c.height);}
- /* Sens pilote par /fftcfg?dir=up|down. */
- var _up = (window.__fftdir === 'up');
- x.drawImage(c,0,_up ? -1 : 1);
+ x.drawImage(c,0,-1);                       // scroll vers le haut d'1px
  var mn=Math.min.apply(null,p),mx=Math.max.apply(null,p),rg=(mx-mn)||1;
  var row=x.createImageData(n,1);
  for(var i=0;i<n;i++){var col=fftCmap((p[i]-mn)/rg),o=i*4;row.data[o]=col[0];row.data[o+1]=col[1];row.data[o+2]=col[2];row.data[o+3]=255;}
- x.putImageData(row,0,_up ? (c.height-1) : 0);}
-function fftDraw(src,d){ if(d&&typeof d.wfdir==='string') window.__fftdir=d.wfdir;
- if(d&&typeof d.zoom==='number'&&d.zoom>0) window.__fftzoom=d.zoom;
- if(d&&typeof d.flip==='boolean') window.__fftflip=d.flip;
-var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
+ x.putImageData(row,0,c.height-1);}         // nouvelle ligne en bas
+function fftDraw(src,d){var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
  if(d.error){e.textContent=d.error;tt.textContent=d.label||'';return;} e.textContent='';
  tt.textContent=d.label+'  •  ARFCN '+d.arfcn+'  •  Fs '+(d.rate/1e6).toFixed(3)+' MHz';
  fftDrawPsd(src,d);fftDrawWf(src,d);}
@@ -634,7 +549,10 @@ function switchView(v){
     if(frameSrc){ if(frm.getAttribute('src')!==frameSrc) frm.setAttribute('src',frameSrc); frm.style.display=''; }
     else frm.style.display='none';
   }
-  /* [2026-08-09] plus de calque : l element n existe plus, ovl vaut null. */
+  if(ovl){                                                     // FFT 3 superposee DANS FFT 2 : transparente, centree H, rotee 180deg
+    if(v==='fft2'){ if(ovl.getAttribute('src')!=='fft_diff.html') ovl.setAttribute('src','fft_diff.html'); ovl.style.display=''; }
+    else ovl.style.display='none';
+  }
   if(native){                                                  // les timers natifs ne tournent que pour FFT 1 ; 2/3 pollent eux-memes
     if(!fftTimer){ fftTick(); fftTimer=setInterval(fftTick,FFT_REFRESH_MS); }
     if(!fftLogTimer){ fftLogTick(); fftLogTimer=setInterval(fftLogTick,1000); }
@@ -659,15 +577,7 @@ function switchDetailTab(tab) {
 }
 
 // ═══ WebSocket ═══
-// [2026-08-08] Schema ET hote derives de la page.
-// L'ancienne forme cablait `ws://` et un port de repli 80. Servie en https://,
-// la page se voyait alors refuser la WebSocket par le navigateur (contenu
-// mixte : ws:// en clair depuis une origine sure), et le repli l'envoyait en
-// plus sur le port 80 puisque location.port est VIDE sur le 443 implicite.
-// Resultat : aucune WebSocket, donc ni tshark, ni VTY, ni etat live — et rien
-// ne le disait, le bouton restait simplement « off ».
-// location.host inclut deja le port quand il n'est pas celui par defaut.
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+const WS_URL = `ws://${location.hostname}:${location.port||80}`;
 let ws = null;
 let opState = {}, activeOpIds = [];
 let reconnectDelay = 1000;
