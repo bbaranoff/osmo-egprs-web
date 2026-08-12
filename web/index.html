@@ -372,6 +372,15 @@
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
       <button class="btn primary" id="audio-btn" onclick="toggleAudio()" title="Écouter l'audio des appels (gsm_audio)">▶ Audio</button>
       <button class="btn" id="mic-btn" onclick="toggleMic()" title="Parler dans les mobiles : votre micro alimente le sink gsm_mic, que gsm_in capte">🎤 Parler</button>
+      <!-- Le micro est celui du POSTE QUI AFFICHE CETTE PAGE, pas celui de la
+           machine hote : host_mic() (wslg-audio-bridge.sh) ne choisit la source
+           que pour l'hote. Des qu'on ouvre le tableau de bord depuis un autre
+           poste, seul CE selecteur decide. Choix memorise par navigateur. -->
+      <select class="btn" id="mic-dev" onchange="micPickDevice(this.value)"
+              title="Entree micro utilisee par CE navigateur" style="max-width:150px">
+        <option value="">micro : defaut</option>
+      </select>
+      <span id="mic-vu" class="htag" title="Gauche : niveau mesure DANS le navigateur. Droite : ce que le conteneur a reellement recu (ms/s et crete). 0 des deux cotes = entree muette." style="display:none">—</span>
       <audio id="audio-stream" style="display:none"></audio>
       <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
       <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
@@ -462,24 +471,95 @@
 //
 // PIEGE NAVIGATEUR : getUserMedia exige un CONTEXTE SECURISE. En http:// sur
 // une IP distante il echoue, silencieusement pour l'utilisateur. On le dit.
-var micOn = false, micCtx = null, micStream = null, micNode = null, micSrc = null;
+var micOn = false, micCtx = null, micStream = null, micNode = null, micSrc = null, micLp = null;
+var micPeak = 0, micVuTimer = null, micSrvTxt = '';
+var MIC_DEV_KEY = 'osmo.micDeviceId';
+
+function micBtn()  { return document.getElementById('mic-btn'); }
 function micFail(m) {
   micOn = false;
-  var b = document.getElementById('mic-btn');
+  var b = micBtn();
   if (b) { b.textContent = '🎤 Parler'; b.classList.remove('primary'); }
+  micVuHide();
   console.error('mic: ' + m);
   alert('Micro indisponible : ' + m);
 }
+
+// ─── Choix de l'entree : c'est le poste CLIENT qui decide ───────────────────
+// Les noms de peripheriques changent d'une machine a l'autre et les deviceId
+// sont propres a chaque navigateur : on ne peut donc rien coder en dur, et le
+// deviceId memorise peut tres bien ne plus exister au prochain poste. D'ou la
+// reprise sur OverconstrainedError plus bas : on retombe sur le defaut plutot
+// que d'echouer. Les libelles restent vides tant qu'aucune permission n'a ete
+// accordee (regle des navigateurs) : la liste se remplit apres le 1er 🎤.
+async function micListDevices() {
+  var sel = document.getElementById('mic-dev');
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  var saved = localStorage.getItem(MIC_DEV_KEY) || '';
+  var devs;
+  try { devs = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return; }
+  var ins = devs.filter(function(d) { return d.kind === 'audioinput'; });
+  sel.innerHTML = '';
+  var opt = document.createElement('option');
+  opt.value = ''; opt.textContent = 'micro : defaut';
+  sel.appendChild(opt);
+  ins.forEach(function(d, i) {
+    var o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('entree ' + (i + 1));
+    sel.appendChild(o);
+  });
+  // Le deviceId memorise vient peut-etre d'une AUTRE machine : s'il n'est plus
+  // dans la liste, on revient au defaut au lieu de garder un choix fantome.
+  if (saved && ins.some(function(d) { return d.deviceId === saved; })) sel.value = saved;
+  else { sel.value = ''; if (saved) localStorage.removeItem(MIC_DEV_KEY); }
+}
+function micPickDevice(id) {
+  if (id) localStorage.setItem(MIC_DEV_KEY, id); else localStorage.removeItem(MIC_DEV_KEY);
+  // Changer d'entree en cours de route = relancer la capture sur la nouvelle.
+  if (micOn) { toggleMic().then(function() { toggleMic(); }); }
+}
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  // Casque branche/debranche, dock change : la liste bouge sans rechargement.
+  navigator.mediaDevices.addEventListener('devicechange', function() { micListDevices(); });
+}
+micListDevices();
+
+// ─── Vu-metre : le SEUL moyen de distinguer « ca debite » de « ca porte » ────
+// Panne vecue le 2026-08-12 : bonne cadence d'octets, contenu integralement nul.
+// A gauche le niveau mesure ICI (avant l'envoi), a droite ce que le conteneur a
+// reellement recu (message mic_stat du serveur). Les deux a zero = entree muette.
+function micVuShow() {
+  var el = document.getElementById('mic-vu');
+  if (!el) return;
+  el.style.display = '';
+  clearInterval(micVuTimer);
+  micVuTimer = setInterval(function() {
+    var pct = Math.min(100, Math.round(micPeak * 100));
+    var bars = Math.round(pct / 10);
+    el.textContent = '🎙 ' + '▇'.repeat(bars) + '·'.repeat(10 - bars) + ' ' + pct + '%'
+                   + (micSrvTxt ? '  ' + micSrvTxt : '');
+    el.className = 'htag' + (pct > 1 ? ' on' : '');
+    micPeak = 0;
+  }, 500);
+}
+function micVuHide() {
+  clearInterval(micVuTimer); micVuTimer = null; micPeak = 0; micSrvTxt = '';
+  var el = document.getElementById('mic-vu');
+  if (el) { el.style.display = 'none'; el.textContent = '—'; el.className = 'htag'; }
+}
+
 async function toggleMic() {
-  var btn = document.getElementById('mic-btn');
+  var btn = micBtn();
   if (micOn) {
     micOn = false;
-    try { if (micNode) micNode.disconnect(); if (micSrc) micSrc.disconnect(); } catch (e) {}
+    try { if (micNode) micNode.disconnect(); if (micLp) micLp.disconnect(); if (micSrc) micSrc.disconnect(); } catch (e) {}
     try { if (micStream) micStream.getTracks().forEach(function(t){ t.stop(); }); } catch (e) {}
     try { if (micCtx) micCtx.close(); } catch (e) {}
-    micCtx = micStream = micNode = micSrc = null;
+    micCtx = micStream = micNode = micSrc = micLp = null;
     send({ type: 'mic_stop' });
     btn.textContent = '🎤 Parler'; btn.classList.remove('primary');
+    micVuHide();
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -487,11 +567,24 @@ async function toggleMic() {
                  + "servez la page en https://, ou ouvrez-la depuis http://localhost "
                  + "(un tunnel SSH -L convient).");
   }
+  var want = localStorage.getItem(MIC_DEV_KEY) || '';
+  var base = { channelCount: 1, echoCancellation: true,
+               noiseSuppression: true, autoGainControl: true };
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true,
-               noiseSuppression: true, autoGainControl: true } });
-  } catch (e) { return micFail(e.name + ' — ' + e.message); }
+    var c = Object.assign({}, base);
+    if (want) c.deviceId = { exact: want };
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: c });
+  } catch (e) {
+    // Machine changee, casque debranche : le deviceId memorise n'existe plus.
+    // On ne meurt pas dessus, on reprend le defaut et on nettoie la memoire.
+    if (want && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {
+      localStorage.removeItem(MIC_DEV_KEY);
+      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: base }); }
+      catch (e2) { return micFail(e2.name + ' — ' + e2.message); }
+      console.warn('mic: entree memorisee introuvable sur cette machine — retour au defaut');
+    } else { return micFail(e.name + ' — ' + e.message); }
+  }
+  micListDevices();   // les libelles ne sont lisibles qu'apres la permission
 
   // 8 kHz demande directement au contexte : c'est le debit du TCH (GSM-FR).
   // Si le navigateur refuse, on rechantillonne a la main plus bas.
@@ -506,10 +599,12 @@ async function toggleMic() {
     var inp = ev.inputBuffer.getChannelData(0);
     var out = new Int16Array(Math.ceil(inp.length / ratio));
     var n = 0;
-    // Decimation simple. Le TCH est en bande telephonique et le codec FR
-    // filtre au-dessus de 3,4 kHz : un filtre anti-repliement maison
-    // n'apporterait pas grand-chose ici.
+    // Decimation (cf. le passe-bas installe juste apres : il enleve ce qui se
+    // replierait ici). Prise du niveau au passage — c'est ce que le vu-metre
+    // affiche, et c'est mesure APRES filtrage, donc sur ce qui part vraiment.
     for (var i = 0; i < inp.length; i++) {
+      var s = inp[i] < 0 ? -inp[i] : inp[i];
+      if (s > micPeak) micPeak = s;
       acc += 1;
       if (acc >= ratio) {
         acc -= ratio;
@@ -519,11 +614,56 @@ async function toggleMic() {
     }
     if (n > 0) ws.send(out.buffer.slice(0, n * 2));
   };
-  micSrc.connect(micNode);
+
+  // ─── Anti-repliement AVANT decimation ────────────────────────────────────
+  // Chrome honore sampleRate:8000, Safari/WebKit et certaines configurations
+  // Firefox l'ignorent et rendent 44,1 ou 48 kHz : la boucle ci-dessus ne garde
+  // alors qu'un echantillon sur 5,5 ou 6. Sans filtre, TOUT le 4-24 kHz se
+  // replie dans la bande utile. Le codec FR filtre bien au-dessus de 3,4 kHz,
+  // mais APRES : le repliement a deja eu lieu, il ne peut plus l'enlever.
+  // Deux biquads en cascade a 3,4 kHz — 4 lignes, aucune dependance. A 8 kHz
+  // natif la chaine est inaudible (fc au-dessus de la bande transmise).
+  var fc = Math.min(3400, micCtx.sampleRate * 0.45);
+  micLp = micCtx.createBiquadFilter();
+  micLp.type = 'lowpass'; micLp.frequency.value = fc; micLp.Q.value = 0.707;
+  var lp2 = micCtx.createBiquadFilter();
+  lp2.type = 'lowpass'; lp2.frequency.value = fc; lp2.Q.value = 0.707;
+  micSrc.connect(micLp); micLp.connect(lp2); lp2.connect(micNode);
   micNode.connect(micCtx.destination);   // requis par Chrome pour cadencer le noeud
+  if (Math.abs(micCtx.sampleRate - 8000) > 1)
+    console.info('mic: contexte a ' + micCtx.sampleRate + ' Hz (8000 refuse) — '
+               + 'decimation 1/' + ratio.toFixed(2) + ' avec passe-bas ' + Math.round(fc) + ' Hz');
   micOn = true;
   send({ type: 'mic_start' });
   btn.textContent = '🔴 Micro ON'; btn.classList.add('primary');
+  micVuShow();
+}
+
+// Le serveur peut couper le micro sans nous : pacat mort, sink gsm_mic disparu,
+// PulseAudio du conteneur redemarre. Avant, le bouton restait rouge et on
+// parlait dans le vide. Desormais l'IHM suit l'etat REEL du pont.
+function micOnServerState(d) {
+  if (!d) return;
+  if (d.on) { micSrvTxt = ''; return; }
+  if (micOn) {
+    micOn = false;
+    try { if (micNode) micNode.disconnect(); if (micLp) micLp.disconnect(); if (micSrc) micSrc.disconnect(); } catch (e) {}
+    try { if (micStream) micStream.getTracks().forEach(function(t){ t.stop(); }); } catch (e) {}
+    try { if (micCtx) micCtx.close(); } catch (e) {}
+    micCtx = micStream = micNode = micSrc = micLp = null;
+    var b = micBtn(); if (b) { b.textContent = '🎤 Parler'; b.classList.remove('primary'); }
+    micVuHide();
+  }
+  if (d.reason) alert('Micro coupe cote conteneur : ' + d.reason);
+}
+// Cote conteneur : ms d'audio recus par seconde, echantillons non nuls, crete,
+// arriere (derive d'horloge) et ms jetes. « 1000 ms/s, 0 non nuls » = le pont
+// transporte parfaitement du silence : la panne est en amont, dans le navigateur.
+function micOnServerStat(d) {
+  if (!d) return;
+  micSrvTxt = '→ ' + d.ms + 'ms/s ' + (d.nonzero ? 'crete ' + d.peak : 'TOUT A ZERO')
+            + (d.droppedMs ? ' (−' + d.droppedMs + 'ms)' : '')
+            + (d.backlogMs > 120 ? ' retard ' + d.backlogMs + 'ms' : '');
 }
 
 var audioPlaying = false;
@@ -723,6 +863,8 @@ function handle(msg) {
     case 'vty_data': vtyOnData(msg.data); break;
     case 'vty_error': vtyOnError(msg.data); break;
     case 'vty_disconnected': vtyOnDisc(msg.data); break;
+    case 'mic_state': micOnServerState(msg.data); break;
+    case 'mic_stat':  micOnServerStat(msg.data); break;
   }
 }
 

@@ -895,39 +895,200 @@ var audioBridge = new AudioBridge();
 // silence (cf. /etc/asound.conf : gsm_in -> gsm_mic.monitor, pose pour ouvrir la
 // boucle audio). Le navigateur envoie du PCM s16le 8 kHz mono en trames
 // WebSocket BINAIRES ; on le rejoue tel quel dans gsm_mic.
-const MIC_SINK = process.env.MIC_SINK || 'gsm_mic';
-function MicBridge() { this.pacat = null; this.owner = null; this.bytes = 0; }
-MicBridge.prototype.start = function(clientId) {
-  if (this.pacat && this.owner !== clientId) return false;   // deja quelqu'un au micro
-  if (this.pacat) return true;
+//
+// TROIS PANNES VECUES, TROIS CONTRE-MESURES ICI. Elles ont toutes en commun de
+// ne RIEN afficher a l'utilisateur, qui voit « Micro ON » et n'a aucune voix.
+//
+//  (1) LE DEBIT NE PROUVE RIEN. Le 2026-08-12, ce pont a transporte 49 400 o en
+//      3 s -- exactement la bonne cadence -- et QUE DES ZEROS : le navigateur
+//      capturait une entree fantome. Un compteur d'octets est structurellement
+//      aveugle a cette panne. On compte donc les octets NON NULS et la CRETE, et
+//      on les renvoie au client (mic_stat) : « ca debite » et « ca porte du
+//      signal » deviennent deux verdicts distincts.
+//
+//  (2) pacat MEURT EN SILENCE. `pacat -d <sink absent>` sort en rc=1
+//      (« Stream error: No such entity ») -- mesure. Or le sink disparait pour
+//      de vrai : lib/audio.sh fait `pkill -x pulseaudio`, et son dedoublonnage
+//      decharge des module-null-sink. L'ancien code se contentait de journaliser
+//      la fermeture : le bouton restait rouge et le navigateur poussait dans le
+//      vide. On verifie le sink AVANT, on relance, et on PREVIENT le client.
+//
+//  (3) DEUX HORLOGES, AUCUN RESYNC. Le producteur est la carte son du poste
+//      client, le consommateur le pulse du conteneur ; rien ne les accorde.
+//      `stdin.write` tamponnait sans borne dans Node -> la latence montait tout
+//      au long de l'appel sur une machine dont l'horloge micro est rapide
+//      (« ca marche sur ce PC, la voix arrive en retard sur l'autre »). On borne
+//      l'arriere et on jette au-dela, en comptant les rejets.
+const MIC_SINK        = process.env.MIC_SINK || 'gsm_mic';
+const MIC_LATENCY_MS  = parseInt(process.env.MIC_LATENCY_MSEC || '60');
+// s16le 8 kHz mono = 16 octets par milliseconde. Toute la comptabilite de ce
+// pont est en millisecondes d'audio, jamais en octets bruts.
+const MIC_BYTES_PER_MS = 16;
+const MIC_MAX_BACKLOG  = MIC_BYTES_PER_MS * parseInt(process.env.MIC_MAX_BACKLOG_MSEC || '240');
+const MIC_MAX_RESPAWN  = parseInt(process.env.MIC_MAX_RESPAWN || '3');
+const MIC_STAT_MS      = 1000;
+
+function MicBridge() {
+  this.pacat = null; this.owner = null; this.ws = null;
+  this.stopping = false; this.respawns = 0;
+  this.timer = null; this.healthTimer = null; this.statTimer = null;
+  this._resetStats(); this.totalBytes = 0;
+}
+MicBridge.prototype._resetStats = function() {
+  this.bytes = 0; this.nonzero = 0; this.peak = 0; this.dropped = 0;
+};
+
+// Le sink existe-t-il MAINTENANT ? pacat ne le dirait qu'apres coup, sur stderr,
+// et start() aurait deja repondu « on ». 200 ms de pactl valent mieux qu'un
+// bouton rouge menteur. En cas de doute (pactl muet/absent) on laisse passer :
+// c'est pacat qui tranchera, et sa mort est desormais rapportee.
+MicBridge.prototype._sinkPresent = function() {
+  try {
+    var out = execFileSync('pactl', ['list', 'short', 'sinks'],
+                           { env: Object.assign({}, process.env, { PULSE_SERVER: PULSE_SERVER }),
+                             timeout: 2000, encoding: 'utf-8' });
+    return out.split('\n').some(function(l) { return l.split('\t')[1] === MIC_SINK; });
+  } catch (e) { dbg('mic sink check: ' + e.message); return true; }
+};
+
+MicBridge.prototype._notify = function(on, reason, ws) {
+  var target = ws || this.ws;
+  if (!target || target.readyState !== WebSocket.OPEN) return;
+  try {
+    target.send(JSON.stringify({ type: 'mic_state', data: { on: on, reason: reason || '' }, ts: Date.now() }));
+  } catch (e) {}
+};
+
+MicBridge.prototype._spawn = function() {
+  var self = this;
   var env = Object.assign({}, process.env, { PULSE_SERVER: PULSE_SERVER });
   // --latency-msec bas : on veut de la conversation, pas du confort de buffer.
-  this.pacat = spawn('pacat', ['--playback', '-d', MIC_SINK, '--format=s16le',
-                               '--rate=8000', '--channels=1', '--latency-msec=60',
-                               '--client-name=web-mic'],
-                     { env: env, stdio: ['pipe', 'ignore', 'pipe'] });
-  this.owner = clientId; this.bytes = 0;
-  var self = this;
-  this.pacat.stdin.on('error', function(e) { dbg('mic pacat stdin: ' + e.message); });
-  this.pacat.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) dbg('mic pacat: ' + m); });
-  this.pacat.on('close', function(code) {
-    log('mic bridge : pacat termine (' + code + ', ' + self.bytes + ' o transmis)');
-    self.pacat = null; self.owner = null;
+  var p = spawn('pacat', ['--playback', '-d', MIC_SINK, '--format=s16le',
+                          '--rate=8000', '--channels=1', '--latency-msec=' + MIC_LATENCY_MS,
+                          '--client-name=web-mic'],
+                { env: env, stdio: ['pipe', 'ignore', 'pipe'] });
+  this.pacat = p;
+  p.stdin.on('error', function(e) { dbg('mic pacat stdin: ' + e.message); });
+  p.stderr.on('data', function(d) { var m = d.toString().trim(); if (m) log('mic pacat: ' + m); });
+  p.on('error', function(e) { log('mic pacat error: ' + e.message); });
+  p.on('close', function(code) {
+    if (self.pacat !== p) return;                 // deja remplace : rien a dire
+    self.pacat = null;
+    self._onDeath(code);
   });
-  log('mic bridge start -> sink ' + MIC_SINK + ' (client ' + clientId + ')');
-  return true;
+  // Un flux qui tient 5 s est un flux sain : on rearme le credit de relances,
+  // sinon une seule panne tardive epuiserait le compteur d'une session entiere.
+  clearTimeout(this.healthTimer);
+  this.healthTimer = setTimeout(function() { self.respawns = 0; }, 5000);
+  return p;
 };
+
+MicBridge.prototype._onDeath = function(code) {
+  var self = this;
+  if (this.stopping || !this.owner) return;       // arret demande : normal
+  log('mic bridge : pacat termine (' + code + ') — ' + this._statLine());
+  if (this.respawns < MIC_MAX_RESPAWN) {
+    this.respawns++;
+    log('mic bridge : relance ' + this.respawns + '/' + MIC_MAX_RESPAWN + ' dans 500 ms');
+    clearTimeout(this.timer);
+    this.timer = setTimeout(function() { if (self.owner) self._spawn(); }, 500);
+    return;
+  }
+  var who = this.ws;
+  var reason = 'pacat s\'est arrete ' + (this.respawns + 1) + ' fois — sink « ' + MIC_SINK
+             + ' » absent, ou PulseAudio du conteneur redemarre.';
+  log('mic bridge : abandon — ' + reason);
+  this._teardown();
+  this._notify(false, reason, who);
+};
+
+MicBridge.prototype._statLine = function() {
+  var ms = Math.round(this.bytes / MIC_BYTES_PER_MS);
+  return this.bytes + ' o (' + ms + ' ms), ' + this.nonzero + ' non nuls, crete '
+       + this.peak + ', ' + this.dropped + ' o jetes';
+};
+
+MicBridge.prototype._teardown = function() {
+  clearTimeout(this.timer); clearTimeout(this.healthTimer);
+  clearInterval(this.statTimer);
+  this.timer = this.healthTimer = this.statTimer = null;
+  this.owner = null; this.ws = null; this.stopping = false; this.respawns = 0;
+};
+
+// Renvoie { on, reason } : « on:true » ne veut plus dire « spawn tente », il veut
+// dire « le sink existe et pacat a demarre ».
+MicBridge.prototype.start = function(clientId, ws) {
+  if (this.pacat && this.owner !== clientId)
+    return { on: false, reason: 'un autre client tient deja le micro' };
+  if (this.pacat) return { on: true, reason: '' };
+  if (!this._sinkPresent()) {
+    var r = 'sink « ' + MIC_SINK + ' » absent du PulseAudio du conteneur '
+          + '(pactl list short sinks — attendu : gsm_audio ET gsm_mic).';
+    log('mic bridge REFUSE : ' + r);
+    return { on: false, reason: r };
+  }
+  // Une relance pouvait etre EN ATTENTE (pacat mort il y a moins de 500 ms) :
+  // sans ce clearTimeout, elle se declenche apres notre _spawn() et lance un
+  // SECOND pacat, dont le premier devient un orphelin qu'on ne nourrit plus.
+  clearTimeout(this.timer); this.timer = null;
+  this.owner = clientId; this.ws = ws; this.stopping = false; this.respawns = 0;
+  this._resetStats(); this.totalBytes = 0;
+  this._spawn();
+  var self = this;
+  clearInterval(this.statTimer);
+  this.statTimer = setInterval(function() { self._pushStat(); }, MIC_STAT_MS);
+  log('mic bridge start -> sink ' + MIC_SINK + ' (client ' + clientId + ')');
+  return { on: true, reason: '' };
+};
+
+// Une fenetre d'une seconde, remise a zero a chaque envoi : le client affiche un
+// etat INSTANTANE, pas un cumul depuis le debut (un cumul masque une panne qui
+// survient en cours d'appel — c'est la regle « jamais de taux depuis un
+// compteur cumulatif »).
+MicBridge.prototype._pushStat = function() {
+  if (!this.owner) return;
+  var ms = Math.round(this.bytes / MIC_BYTES_PER_MS);
+  this._notifyStat({ ms: ms, nonzero: this.nonzero, peak: this.peak,
+                     droppedMs: Math.round(this.dropped / MIC_BYTES_PER_MS),
+                     backlogMs: this.pacat && this.pacat.stdin
+                                ? Math.round(this.pacat.stdin.writableLength / MIC_BYTES_PER_MS) : 0 });
+  if (ms > 0 && this.nonzero === 0)
+    log('mic bridge : ' + ms + ' ms recus, TOUS A ZERO — micro coupe ou entree fantome cote navigateur');
+  this._resetStats();
+};
+MicBridge.prototype._notifyStat = function(data) {
+  if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  try { this.ws.send(JSON.stringify({ type: 'mic_stat', data: data, ts: Date.now() })); } catch (e) {}
+};
+
 MicBridge.prototype.write = function(buf, clientId) {
   if (!this.pacat || this.owner !== clientId) return;
-  this.bytes += buf.length;
-  try { this.pacat.stdin.write(buf); } catch (e) { dbg('mic write: ' + e.message); }
+  // Mesure AVANT tout rejet : on veut savoir si le navigateur envoie du signal,
+  // meme quand le conteneur n'arrive pas a le consommer.
+  this.bytes += buf.length; this.totalBytes += buf.length;
+  for (var i = 0; i + 1 < buf.length; i += 2) {
+    var v = buf.readInt16LE(i);
+    if (v !== 0) this.nonzero++;
+    var a = v < 0 ? -v : v;
+    if (a > this.peak) this.peak = a;
+  }
+  // Garde-fou d'horloge : au-dela de MIC_MAX_BACKLOG_MSEC d'arriere, la trame
+  // arriverait de toute facon trop tard pour une conversation. On la jette.
+  var st = this.pacat.stdin;
+  if (st.writableLength > MIC_MAX_BACKLOG) { this.dropped += buf.length; return; }
+  try { st.write(buf); } catch (e) { dbg('mic write: ' + e.message); }
 };
+
 MicBridge.prototype.stop = function(clientId) {
-  if (!this.pacat || this.owner !== clientId) return;
-  log('mic bridge stop (client ' + clientId + ', ' + this.bytes + ' o transmis)');
-  try { this.pacat.stdin.end(); } catch (e) {}
-  var p = this.pacat; this.pacat = null; this.owner = null;
-  setTimeout(function() { try { p.kill('SIGKILL'); } catch (e) {} }, 500);
+  if (!this.owner || this.owner !== clientId) return;
+  log('mic bridge stop (client ' + clientId + ', ' + this.totalBytes + ' o transmis)');
+  this.stopping = true;
+  var p = this.pacat; this.pacat = null;
+  if (p) {
+    try { p.stdin.end(); } catch (e) {}
+    setTimeout(function() { try { p.kill('SIGKILL'); } catch (e) {} }, 500);
+  }
+  this._teardown();
 };
 var micBridge = new MicBridge();
 
@@ -1225,13 +1386,17 @@ wss.on('connection', function(ws, req) {
       case 'tshark_stop':            tsharkSession.stop();                            break;
       case 'packet_hex_request':     tsharkSession.fetchHex(msg.frameNum);            break;
       case 'packet_dissect_request': tsharkSession.fetchDissect(msg.frameNum);        break;
-      case 'mic_start':
-        ws.send(JSON.stringify({ type: 'mic_state',
-                                 data: { on: micBridge.start(clientId) }, ts: Date.now() }));
+      case 'mic_start': {
+        // start() rend { on, reason } : le client doit pouvoir AFFICHER pourquoi
+        // le micro ne s'est pas arme, sinon la panne est indiscernable d'un
+        // micro qui marche mais ne porte rien.
+        var st = micBridge.start(clientId, ws);
+        ws.send(JSON.stringify({ type: 'mic_state', data: st, ts: Date.now() }));
         break;
+      }
       case 'mic_stop':
         micBridge.stop(clientId);
-        ws.send(JSON.stringify({ type: 'mic_state', data: { on: false }, ts: Date.now() }));
+        ws.send(JSON.stringify({ type: 'mic_state', data: { on: false, reason: '' }, ts: Date.now() }));
         break;
       case 'poll':                   pollAll();                                        break;
     }
