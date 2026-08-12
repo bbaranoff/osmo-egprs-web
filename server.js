@@ -79,6 +79,16 @@ const CC_MSG = {
 const LAPDM_S = { 0:'RR', 1:'RNR', 2:'REJ' };
 const LAPDM_U = { 0:'UI', 3:'DM', 7:'SABM', 8:'DISC', 12:'UA' };
 
+// ─── Types de message RR utiles (GSM 04.08) ──────────────────
+// Valeurs relevees sur le pcap du 12/08. On ne mappe QUE ce qui merite d'etre
+// distingue a l'oeil dans un tableau qui defile ; le reste garde son hexa.
+const RR_MSG = {
+  0x0d:'CHANNEL RELEASE', 0x21:'PAGING REQ 1', 0x29:'ASSIGNMENT COMPLETE',
+  0x2e:'ASSIGNMENT CMD',  0x2f:'ASSIGNMENT FAIL', 0x3f:'IMM ASS',
+  0x39:'IMM ASS EXT',     0x3a:'IMM ASS REJECT',  0x15:'MEAS REPORT',
+  0x06:'SYS INFO 5ter',   0x1d:'SI5', 0x1e:'SI6',
+};
+
 // ─── GSMTAP Channel Type Map ─────────────────────────────────
 const GSMTAP_CHAN = {
   '0':'UNKNOWN','1':'BCCH','2':'CCCH','3':'SDCCH4','4':'SDCCH8',
@@ -435,6 +445,13 @@ TsharkSession.prototype.start = function() {
     '-e', 'gsm_a.dtap.msg_mm_type',     // f[23]
     '-e', 'gsm_a.dtap.msg_rr_type',     // f[24]
     '-e', 'gsm_a.dtap.msg_sms_type',    // f[25]
+    // IMMEDIATE ASSIGNMENT : porte par gsm_a.ccch mais type dans msg_rr_type
+    // (0x3f). Ce qu'on veut lire dessus, c'est le slot assigne et le TA ORDONNE
+    // — c'est la premiere valeur de TA de tout l'appel, et la boucle TA de la
+    // BTS part de la.
+    '-e', 'gsm_a.rr.timeslot',          // f[26]
+    '-e', 'gsm_a.rr.timing_adv',        // f[27]
+    '-e', 'gsm_a.rr.ra',                // f[28]
     '-l', '-n',
   ]);
 
@@ -739,7 +756,7 @@ TsharkSession.prototype.parseLine = function(line) {
     arfcn: '', uplink: false, channel: '', timeslot: '', fn: '',
     layers: null,
     opLabel: '—', direction: '',
-    l2: '', cc: '', l3: '',
+    l2: '', cc: '', rr: '', l3: '',
   };
 
   // ── Detail LAPDm / CC (2026-08-12) ──────────────────────────────────────
@@ -767,8 +784,19 @@ TsharkSession.prototype.parseLine = function(line) {
     pkt.cc = CC_MSG[n] || ('CC 0x' + n.toString(16));
     pkt.l3 = 'CC';
   } else if (f[23] !== undefined && f[23] !== '') { pkt.l3 = 'MM'; }
-  else if (f[24] !== undefined && f[24] !== '') { pkt.l3 = 'RR'; }
   else if (f[25] !== undefined && f[25] !== '') { pkt.l3 = 'SMS'; }
+  if (f[24] !== undefined && f[24] !== '') {
+    var r = parseInt(f[24]);
+    if (!pkt.l3) pkt.l3 = 'RR';
+    pkt.rr = RR_MSG[r] || ('RR 0x' + r.toString(16));
+    // IMM ASS / ASSIGNMENT CMD : on colle le slot et le TA a cote du nom. Sans
+    // eux la ligne dit « une assignation a eu lieu » et rien d'exploitable.
+    var det = [];
+    if (f[26] !== undefined && f[26] !== '') det.push('TS' + parseInt(f[26]));
+    if (f[27] !== undefined && f[27] !== '') det.push('TA' + parseInt(f[27]));
+    if (f[28] !== undefined && f[28] !== '') det.push('RA' + parseInt(f[28]));
+    if (det.length) pkt.rr += ' ' + det.join(' ');
+  }
 
   if (isGsmtap) {
     pkt.arfcn    = f[7]  || '';

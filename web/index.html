@@ -802,7 +802,7 @@ function matchFilter(p) {
   if (om) return (p.opLabel||'').toLowerCase().includes('op'+om[1]);
   // [2026-08-12] l2/cc/l3 ajoutes au texte filtrable : sans eux, taper « sabm »
   // ou « setup » dans le filtre ne matchait que si la colonne INFO le contenait.
-  return `${p.protocol} ${p.info} ${p.opLabel} ${p.direction} ${p.src} ${p.dst} ${p.arfcn} ${p.l2||''} ${p.cc||''} ${p.l3||''}`.toLowerCase().includes(f);
+  return `${p.protocol} ${p.info} ${p.opLabel} ${p.direction} ${p.src} ${p.dst} ${p.arfcn} ${p.l2||''} ${p.cc||''} ${p.rr||''} ${p.l3||''}`.toLowerCase().includes(f);
 }
 
 function addPacket(p) {
@@ -839,7 +839,7 @@ function makePktRow(p) {
   const dir = p.direction || (p.uplink ? 'UL' : 'DL');
   const dirCls = dir === 'UL' ? 'color:var(--red);font-weight:700' : dir === 'DL' ? 'color:var(--green);font-weight:700' : 'color:var(--t2)';
   const opLabel = p.opLabel || '—';
-  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2);font-size:11px">${ts}</td><td style="${dirCls};font-size:11px">${esc(dir)}</td><td style="color:var(--cyan);font-size:11px;font-weight:600">${esc(opLabel)}</td><td><span class="proto ${cls}">${esc(p.protocol||'—')}</span></td><td style="color:var(--t3)">${p.length||''}</td><td style="font-size:11px;white-space:nowrap"><span style="color:var(--t2)">${esc(p.l2||'')}</span>${p.cc?` <span style="color:var(--yellow,#e5c07b);font-weight:700">${esc(p.cc)}</span>`:(p.l3?` <span style="color:var(--t3)">${esc(p.l3)}</span>`:'')}</td><td style="color:var(--t1);max-width:500px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
+  tr.innerHTML = `<td style="color:var(--t3)">${p.id}</td><td style="color:var(--t2);font-size:11px">${ts}</td><td style="${dirCls};font-size:11px">${esc(dir)}</td><td style="color:var(--cyan);font-size:11px;font-weight:600">${esc(opLabel)}</td><td><span class="proto ${cls}">${esc(p.protocol||'—')}</span></td><td style="color:var(--t3)">${p.length||''}</td><td style="font-size:11px;white-space:nowrap"><span style="color:var(--t2)">${esc(p.l2||'')}</span>${(p.cc||p.rr)?` <span style="color:var(--yellow,#e5c07b);font-weight:700">${esc(p.cc||p.rr)}</span>`:(p.l3?` <span style="color:var(--t3)">${esc(p.l3)}</span>`:'')}</td><td style="color:var(--t1);max-width:500px;overflow:hidden;text-overflow:ellipsis">${esc(p.info||'')}</td>`;
   return tr;
 }
 
