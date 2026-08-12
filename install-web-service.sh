@@ -46,7 +46,60 @@ if [ -d "$APP_DIR" ] && [ ! -d "$APP_DIR/node_modules/ws" ]; then
         echo -e "  ${YELLOW}[deps] npm install a échoué (offline ?) — on continue${NC}"
 fi
 
-# ── 3. Unit systemd ──────────────────────────────────────────────────────────
+# ── 3. Certificat TLS auto-signe ─────────────────────────────────────────────
+# server.js:1161-1183 n'arme le listener HTTPS QUE si ces deux fichiers existent.
+# Sans eux il journalise « HTTPS non arme : certificat absent » et sert en clair
+# -- et le bouton micro reste refuse par le navigateur, car getUserMedia n'existe
+# que dans un contexte securise (https:// ou http://localhost).
+#
+# POURQUOI ICI ET PAS DANS LE Dockerfile : une cle privee generee au build serait
+# identique pour quiconque tire l'image. On la genere donc a l'installation, une
+# fois, dans le container. Corollaire assume : elle ne survit pas a un
+# `docker rm` -- relancer ce script apres recreation du container.
+#
+# Idempotent : si le certificat est encore valable plus de 30 jours, on n'y
+# touche pas (regenerer ferait re-avertir le navigateur pour rien).
+# Le certificat vit DANS l'application, pas dans /etc : il appartient a ce
+# dashboard et a lui seul, et il se deplace, se sauvegarde et se supprime avec
+# lui. `tls/` est dans le .gitignore -- une cle privee publiee laisserait
+# n'importe qui se faire passer pour la console.
+TLS_DIR="${TLS_DIR:-${APP_DIR}/tls}"
+TLS_CERT="${TLS_DIR}/cert.pem"
+TLS_KEY="${TLS_DIR}/key.pem"
+
+if [ -f "$TLS_CERT" ] && openssl x509 -in "$TLS_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
+    echo -e "  ${GREEN}[tls] certificat present et valable > 30 j${NC}"
+else
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo -e "  ${RED}[tls] openssl absent — HTTPS restera desarme${NC}"
+    else
+        # SAN : sans « subjectAltName », les navigateurs modernes refusent le
+        # certificat meme apres acceptation de l'exception (le CN seul n'est
+        # plus regarde depuis Chrome 58). On y met localhost, la boucle locale
+        # et TOUTES les adresses IPv4 du container, decouvertes a l'execution.
+        # ⚠️ Si docker reattribue une autre IP au container, elle ne sera plus
+        # dans le SAN : relancer ce script (il regenerera, cf. la garde 30 j
+        # qu'il faut alors contourner avec `rm -f $TLS_CERT`).
+        san="DNS:localhost,DNS:$(hostname),IP:127.0.0.1"
+        for ip in $(hostname -I 2>/dev/null || true); do
+            case "$ip" in *:*) continue ;; esac      # IPv6 : pas de SAN IP ici
+            san="${san},IP:${ip}"
+        done
+        echo -e "  ${YELLOW}[tls] generation d'un certificat auto-signe (SAN: ${san})${NC}"
+        mkdir -p "$TLS_DIR"; chmod 700 "$TLS_DIR"
+        openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+            -keyout "$TLS_KEY" -out "$TLS_CERT" \
+            -subj "/CN=osmo-egprs-web" \
+            -addext "subjectAltName=${san}" \
+            -addext "basicConstraints=critical,CA:FALSE" \
+            -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
+        chmod 600 "$TLS_KEY"; chmod 644 "$TLS_CERT"
+        echo -e "  ${GREEN}[tls] $TLS_CERT (825 j, auto-signe)${NC}"
+    fi
+fi
+
+# ── 4. Unit systemd ──────────────────────────────────────────────────────────
 [ -f "$UNIT_SRC" ] || { echo -e "${RED}[unit] introuvable : $UNIT_SRC${NC}"; exit 1; }
 cp -f "$UNIT_SRC" "$UNIT_DST"
 echo -e "  ${GREEN}[unit] $UNIT_DST installé${NC}"
@@ -57,7 +110,7 @@ systemctl restart osmo-egprs-web
 sleep 2
 
 if [ "$(systemctl is-active osmo-egprs-web)" = "active" ]; then
-    echo -e "  ${GREEN}[ok] osmo-egprs-web active (enabled) — http://<ip>:8080${NC}"
+    echo -e "  ${GREEN}[ok] osmo-egprs-web active (enabled) — https://$(hostname -I | awk '{print $1}'):80  (TLS sur le 80 ; clair sur :8080)${NC}"
 else
     echo -e "  ${RED}[ko] service non actif — journalctl -u osmo-egprs-web${NC}"
     systemctl --no-pager status osmo-egprs-web | head -12 || true

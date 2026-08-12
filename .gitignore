@@ -1,0 +1,5 @@
+# Certificat TLS auto-signe genere par install-web-service.sh.
+# La cle privee ne doit jamais entrer dans le depot ni dans une image :
+# publiee, elle permettrait a n'importe qui de se faire passer pour la console.
+tls/
+node_modules/
