@@ -61,6 +61,24 @@ function shCmd(container, id, inner) {
 function log()  { var a = Array.prototype.slice.call(arguments); console.log.apply(console, ['[' + new Date().toISOString() + ']'].concat(a)); }
 function dbg()  { if (VERBOSE) { var a = Array.prototype.slice.call(arguments); console.log.apply(console, ['[DBG]'].concat(a)); } }
 
+// ─── Types de message Call Control (GSM 04.08 §10.4) ─────────
+// Repli en hex si inconnu : mieux vaut « CC 0x2b » qu'une case vide, qui ne
+// distingue pas « type absent » de « type non reconnu ».
+const CC_MSG = {
+  1:'ALERTING', 2:'CALL PROCEEDING', 3:'PROGRESS', 4:'CC-ESTABLISHMENT',
+  5:'SETUP', 6:'CC-EST CONFIRMED', 7:'CONNECT', 8:'CALL CONFIRMED',
+  9:'START CC', 11:'RECALL', 14:'EMERGENCY SETUP', 15:'CONNECT ACK',
+  16:'USER INFORMATION', 23:'MODIFY REJECT', 24:'MODIFY', 31:'MODIFY COMPLETE',
+  37:'DISCONNECT', 42:'RELEASE COMPLETE', 45:'RELEASE', 49:'STOP DTMF',
+  50:'STOP DTMF ACK', 52:'STATUS ENQUIRY', 53:'START DTMF', 54:'START DTMF ACK',
+  55:'START DTMF REJECT', 58:'CONGESTION CONTROL', 61:'NOTIFY', 62:'STATUS',
+  25:'HOLD', 26:'HOLD ACK', 27:'HOLD REJECT',
+  28:'RETRIEVE', 29:'RETRIEVE ACK', 30:'RETRIEVE REJECT',
+};
+// Type de trame LAPDm : I / S / U, puis le sous-type quand il existe.
+const LAPDM_S = { 0:'RR', 1:'RNR', 2:'REJ' };
+const LAPDM_U = { 0:'UI', 3:'DM', 7:'SABM', 8:'DISC', 12:'UA' };
+
 // ─── GSMTAP Channel Type Map ─────────────────────────────────
 const GSMTAP_CHAN = {
   '0':'UNKNOWN','1':'BCCH','2':'CCCH','3':'SDCCH4','4':'SDCCH8',
@@ -399,6 +417,24 @@ TsharkSession.prototype.start = function() {
     '-e', 'sctp.srcport',
     '-e', 'sctp.dstport',
     '-e', 'frame.protocols',
+    // [2026-08-12] LAPDm + CC. Les trames etaient DEJA capturees (mesure :
+    // 70 LAPDm et 29 DTAP dans /tmp/capture.pcap) et deja etiquetees LAPDm/DTAP
+    // par displayProto — mais sans aucun detail : impossible de distinguer une
+    // SABM d'un RR, ni un CC Setup d'un CC Disconnect, autrement qu'en lisant
+    // la colonne Info a l'oeil.
+    // ⚠️ CES CHAMPS SONT APPENDUS A LA FIN, jamais inseres : parseLine() indexe
+    // f[0..14] en dur. Toute insertion au milieu decalerait tout en silence.
+    '-e', 'lapdm.sapi',                 // f[15]
+    '-e', 'lapdm.cr',                   // f[16]
+    '-e', 'lapdm.control.ftype',        // f[17]
+    '-e', 'lapdm.control.s_ftype',      // f[18]
+    '-e', 'lapdm.control.u_modifier_cmd', // f[19]
+    '-e', 'lapdm.control.n_r',          // f[20]
+    '-e', 'lapdm.control.n_s',          // f[21]
+    '-e', 'gsm_a.dtap.msg_cc_type',     // f[22]
+    '-e', 'gsm_a.dtap.msg_mm_type',     // f[23]
+    '-e', 'gsm_a.dtap.msg_rr_type',     // f[24]
+    '-e', 'gsm_a.dtap.msg_sms_type',    // f[25]
     '-l', '-n',
   ]);
 
@@ -703,7 +739,36 @@ TsharkSession.prototype.parseLine = function(line) {
     arfcn: '', uplink: false, channel: '', timeslot: '', fn: '',
     layers: null,
     opLabel: '—', direction: '',
+    l2: '', cc: '', l3: '',
   };
+
+  // ── Detail LAPDm / CC (2026-08-12) ──────────────────────────────────────
+  // f[15..25], appendus en fin de liste tshark. Champs absents = chaine vide :
+  // on ne fabrique rien, une case vide veut dire « pas cette couche ».
+  var sapi = f[15], ftype = f[17], sftype = f[18], umod = f[19];
+  if (sapi !== undefined && sapi !== '') {
+    var t = '';
+    // ⚠️ tshark rend ces champs en HEXA (« 0x03 »), pas en decimal — verifie sur
+    // le pcap. `parseInt` gere le prefixe 0x, mais une comparaison de CHAINE a
+    // '2' ne matche jamais : c'est le piege corrige ici.
+    // Format du champ de controle LAPDm (GSM 04.06) : I=0x00, S=0x01, U=0x03.
+    var nf = parseInt(ftype);
+    if      (nf === 3 && umod   !== '' && umod   !== undefined) t = LAPDM_U[parseInt(umod)]   || ('U 0x' + parseInt(umod).toString(16));
+    else if (nf === 1 && sftype !== '' && sftype !== undefined) t = LAPDM_S[parseInt(sftype)] || ('S 0x' + parseInt(sftype).toString(16));
+    else if (nf === 0) {
+      t = 'I';
+      if (f[21] !== '' && f[21] !== undefined) t += ' N(S)=' + f[21];
+      if (f[20] !== '' && f[20] !== undefined) t += ' N(R)=' + f[20];
+    }
+    pkt.l2 = 'SAPI' + sapi + (t ? ' ' + t : '');
+  }
+  if (f[22] !== undefined && f[22] !== '') {
+    var n = parseInt(f[22]);
+    pkt.cc = CC_MSG[n] || ('CC 0x' + n.toString(16));
+    pkt.l3 = 'CC';
+  } else if (f[23] !== undefined && f[23] !== '') { pkt.l3 = 'MM'; }
+  else if (f[24] !== undefined && f[24] !== '') { pkt.l3 = 'RR'; }
+  else if (f[25] !== undefined && f[25] !== '') { pkt.l3 = 'SMS'; }
 
   if (isGsmtap) {
     pkt.arfcn    = f[7]  || '';

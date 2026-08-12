@@ -1,5 +1,5 @@
 [Unit]
-Description=osmo_egprs Operations Console (web dashboard)
+Description=osmo-nitb-for-calypso Operations Console (web dashboard)
 Documentation=https://github.com/bbaranoff/osmo-egprs-weB
 After=network.target
 
@@ -12,6 +12,13 @@ WorkingDirectory=/opt/osmo-egprs-web
 Environment=HTTP_PORT=8080
 Environment=OSMO_NATIVE=1
 Environment=OSMO_OP_IDS=1
+# ⚠️ NE PAS RETIRER : interface de capture du dashboard (GSMTAP/SCTP). La copie
+# de ce unit qui vit dans le depot osmo-egprs-web l'avait perdue ; comme
+# install-web-service.sh reinstalle le unit depuis CE fichier (le Dockerfile le
+# recopie dans /opt/osmo-egprs-web/, cf. Dockerfile.run), la source unique est
+# ici. Sans CAP_IFACE la capture se rabat sur un defaut et l'onglet trafic se
+# tait — panne silencieuse, aucun message d'erreur.
+Environment=CAP_IFACE=any
 Environment=PULSE_SERVER=unix:/var/run/pulse/native
 Environment=AUDIO_SOURCE=gsm_audio.monitor
 # --- TLS (12/08/2026) ---------------------------------------------------------
