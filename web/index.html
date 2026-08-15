@@ -356,6 +356,7 @@
     <span class="logo">⎔ OSMO_EGPRS</span>
     <span class="sep"></span>
     <span class="htag" id="tag-ops">0 ops</span>
+    <span class="htag a5tag a5off" id="tag-a5" title="état chiffrement A5">A5 ?</span>
     <span class="htag" id="tag-tshark">tshark off</span>
     <span class="sep"></span>
     <div class="vtabs">
@@ -367,6 +368,16 @@
     <div class="hright">
       <button class="btn primary" onclick="send({type:'tshark_start'})" title="Start capture">▶ Capture</button>
       <button class="btn danger" onclick="send({type:'tshark_stop'})" title="Stop capture">■ Stop</button>
+      <select class="btn" id="rec-src" title="Source IQ air à enregistrer (fifos relais libres)">
+        <option value="sdcch">IQ SDCCH air</option>
+        <option value="tch">IQ TCH air</option>
+      </select>
+      <select class="btn" id="rec-m" title="grgsm -m (type de canal)"><option value="BCCH_SDCCH4" selected>-m BCCH_SDCCH4</option><option value="BCCH">-m BCCH</option><option value="SDCCH8">-m SDCCH8</option><option value="TCHF">-m TCHF</option><option value="TCHH">-m TCHH</option></select>
+      <select class="btn" id="rec-t" title="grgsm -t (timeslot)"><option value="0" selected>-t 0</option><option value="1">-t 1</option><option value="2">-t 2</option><option value="3">-t 3</option><option value="4">-t 4</option><option value="5">-t 5</option><option value="6">-t 6</option><option value="7">-t 7</option></select>
+      <input class="btn" id="rec-kc" placeholder="Kc auto" title="Kc pour DECIPHERED — vide = Kc capturé auto ; sinon colle/saisis (hex)" style="width:150px;font-family:monospace">
+      <button class="btn" onclick="fillKc()" title="Remplir avec le dernier Kc capturé">↧Kc</button>
+      <button class="btn primary" id="rec-btn" onclick="toggleRec()" title="Enregistrer un cfile IQ de l'air -> path + commande grgsm_decode (ciphered/deciphered)">⏺ Rec cfile</button>
+      <span class="htag" id="tag-rec">rec off</span>
       <button class="btn" onclick="send({type:'poll'})">⟳ Refresh</button>
       <button class="btn" onclick="clearPackets()">Clear</button>
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
@@ -833,15 +844,20 @@ function send(msg) { if (ws && ws.readyState===1) ws.send(JSON.stringify(msg)); 
 // ═══ Message Router ═══
 function handle(msg) {
   switch(msg.type) {
+    case 'rec_status': onRecStatus(msg.data); break;
+    case 'rec_result': onRecResult(msg.data); break;
+    case 'rec_error':  setRec(false); alert('Capture IQ: ' + (msg.data && msg.data.msg)); break;
     case 'init':
       activeOpIds = msg.data.activeOpIds||[];
       updateOps(msg.data.operators);
       setCaptureRunning(msg.data.tsharkActive || false);
+      if(msg.data.a5) updateA5(msg.data.a5);
       break;
     case 'state':
       activeOpIds = msg.data.activeOpIds||activeOpIds;
       updateOps(msg.data.operators);
       break;
+    case 'a5_status': updateA5(msg.data); break;
     case 'tshark_status':
       setCaptureRunning(msg.data.active);
       break;
@@ -1497,6 +1513,56 @@ function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 
 // ═══ Init ═══
 connectWs();
+</script>
+<style>
+#rec-result{display:none;position:fixed;right:14px;bottom:14px;max-width:min(720px,92vw);z-index:9999;
+  background:var(--panel,#1b1e24);color:var(--fg,#e6e6e6);border:1px solid var(--border,#3a3f4b);
+  border-radius:8px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.45);font-size:12px}
+#rec-result code{background:rgba(127,127,127,.15);padding:2px 5px;border-radius:4px;
+  word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace;display:inline-block}
+#rec-result .rec-h{font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+#rec-result .rec-row{margin:4px 0;line-height:1.5}
+#rec-result .rec-cmd{margin:8px 0;padding:8px;border-radius:6px;background:rgba(127,127,127,.08)}
+#rec-result .rec-tag{display:inline-block;font-weight:700;font-size:10px;padding:1px 6px;border-radius:4px;margin-right:6px}
+#rec-result .rec-tag.ciph{background:#7a2530;color:#ffd7d7}
+#rec-result .rec-tag.deciph{background:#22603a;color:#d7ffe6}
+#rec-result .btn{cursor:pointer}
+.a5tag{font-weight:700}
+.a5tag.a5on{background:#22603a;color:#d7ffe6}
+.a5tag.a5off{background:#5a3a3a;color:#ffd7d7}
+.a5tag.a5live{box-shadow:0 0 0 2px rgba(255,90,90,.55)}
+</style>
+<div id="rec-result"></div>
+<script>
+var recRunning=false;
+function updateA5(a){ var el=document.getElementById('tag-a5'); if(!el)return;
+  var on=((a.mode||'').replace(/\s/g,'').toLowerCase()==='a51')||a.algo>=1;
+  el.textContent=on?('🔒 A5/'+(a.algo>=1?a.algo:1)+(a.active?' ●':'')):'🔓 clair (A5/0)';
+  el.className='htag a5tag '+(on?'a5on':'a5off')+(a.active?' a5live':'');
+  el.title='ENCRYPTION='+(a.mode||'?')+' · Kc '+(a.active?('present, A5/'+a.algo):'absent (idle/efface)');
+  window._lastKc=a.lastKc||window._lastKc||''; var kf=document.getElementById('rec-kc'); if(kf) kf.placeholder=window._lastKc?('Kc auto: '+window._lastKc):'Kc auto (aucun capté)'; }
+function toggleRec(){ if(recRunning){send({type:'record_stop'});} else {send({type:'record_start',source:document.getElementById('rec-src').value,m:document.getElementById('rec-m').value,t:parseInt(document.getElementById('rec-t').value,10),kc:document.getElementById('rec-kc').value});} }
+function fillKc(){ var kf=document.getElementById('rec-kc'); if(kf&&window._lastKc) kf.value=window._lastKc; }
+function recFmtBytes(b){ if(b>=1e9)return (b/1e9).toFixed(2)+' Go'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mo'; if(b>=1e3)return (b/1e3).toFixed(0)+' Ko'; return (b||0)+' o'; }
+function setRec(on){ recRunning=on; var t=document.getElementById('tag-rec'), b=document.getElementById('rec-btn');
+  if(b)b.textContent=on?'■ Stop rec':'⏺ Rec cfile'; if(t){t.textContent=on?'REC ●':'rec off'; t.style.color=on?'#e5484d':'';} }
+function onRecStatus(d){ setRec(!!d.running); if(d.running){var t=document.getElementById('tag-rec'); if(t)t.textContent='REC ● '+recFmtBytes(d.bytes)+' / '+(d.seconds||0)+'s';} }
+function recCopy(id){ var el=document.getElementById(id); if(el&&navigator.clipboard)navigator.clipboard.writeText(el.textContent); }
+function onRecResult(d){ setRec(false); var box=document.getElementById('rec-result'); if(!box)return;
+  var kc=d.kcPresent?('🔒 Kc (A5/'+d.kcAlgo+') = '+d.kc+(d.kcFromCache?(' (capturé il y a '+Math.round((d.kcAgeMs||0)/1000)+'s)'):(d.kcManual?' (saisi manuellement)':' (live)'))):'Kc absent — lance une session chiffrée puis re-record';
+  box.style.display='block';
+  box.innerHTML=
+   '<div class="rec-h">⏺ cfile enregistré<button class="btn" onclick="document.getElementById(\'rec-result\').style.display=\'none\'">✕</button></div>'+
+   '<div class="rec-row"><b>Path</b> <code id="rec-path"></code> <button class="btn" onclick="recCopy(\'rec-path\')">copier</button></div>'+
+   '<div class="rec-row"><b>Taille</b> '+recFmtBytes(d.bytes)+' · '+d.seconds+'s · source '+d.source+' -m '+(d.mode||'?')+' -t '+(d.timeslot!=null?d.timeslot:'?')+(d.note?' · '+d.note:'')+'</div>'+
+   '<div class="rec-row">'+kc+'</div>'+
+   '<div class="rec-cmd"><span class="rec-tag deciph">DECIPHERED</span> <button class="btn" onclick="recCopy(\'rec-cmd-d\')">copier</button><div><code id="rec-cmd-d"></code></div></div>'+
+   '<div class="rec-cmd"><span class="rec-tag ciph">CIPHERED</span> <button class="btn" onclick="recCopy(\'rec-cmd-c\')">copier</button><div><code id="rec-cmd-c"></code></div></div>';
+  document.getElementById('rec-path').textContent=d.path;
+  document.getElementById('rec-cmd-d').textContent=d.cmdDeciphered;
+  document.getElementById('rec-cmd-c').textContent=d.cmdCiphered;
+  if(d.hint){ box.innerHTML+='<div class="rec-row" style="opacity:.8;font-size:11px;margin-top:6px">\u26a0\ufe0f '+d.hint+'</div>'; }
+}
 </script>
 </body>
 </html>

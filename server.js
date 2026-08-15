@@ -1358,6 +1358,44 @@ const httpServer = http.createServer(function(req, res) {
 // ─── WebSocket Server ────────────────────────────────────────
 const wss = new WebSocketServer({ server: httpServer });
 
+// ─── Capture IQ (cfile) : record/stop + commande grgsm_decode par type ──────
+function recBroadcast(obj) {
+  if (!obj.ts) obj.ts = Date.now();
+  var m = JSON.stringify(obj);
+  clients.forEach(function (c) { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(m); });
+}
+// Dernier Kc non nul vu : le Kc est effacé à l'idle (DM_EST/DM_REL) -> à l'arrêt
+// d'un record il est souvent déjà à zéro. On garde le dernier Kc RÉEL pour que la
+// commande « deciphered » (avec clé) reste exploitable.
+var lastKc = null;
+setInterval(function () {
+  try {
+    var b = fs.readFileSync('/dev/shm/calypso_kc');
+    if (b.length >= 14 && b[4] >= 1 && b[4] <= 3 && !b.slice(6, 14).every(function (x) { return x === 0; })) {
+      lastKc = { algo: b[4], spaced: Array.from(b.slice(6, 14)).map(function (x) { return x.toString(16).padStart(2, '0'); }).join(' '), tsMs: Date.now() };
+    }
+  } catch (e) {}
+}, 250);
+const recorder = require('./rec.js')({ broadcast: recBroadcast, log: log, getLastKc: function () { return lastKc; } });
+
+// ─── État chiffrement A5 (badge dashboard) : ENCRYPTION du process + Kc live ──
+function readA5Status() {
+  var mode = '?', algo = 0, active = false;
+  try {
+    var pid = execFileSync('pgrep', ['-f', 'calypso-ipc-device -u']).toString().split('\n')[0].trim();
+    if (pid) {
+      var env = fs.readFileSync('/proc/' + pid + '/environ', 'utf8').split('\0');
+      for (var i = 0; i < env.length; i++) if (env[i].indexOf('ENCRYPTION=') === 0) { mode = env[i].slice(11); break; }
+    }
+  } catch (e) {}
+  try {
+    var b = fs.readFileSync('/dev/shm/calypso_kc');
+    if (b.length >= 14) { algo = b[4]; active = (algo >= 1) && !b.slice(6, 14).every(function (x) { return x === 0; }); }
+  } catch (e) {}
+  return { mode: mode, algo: algo, active: active };
+}
+setInterval(function () { var d = readA5Status(); d.lastKc = lastKc ? lastKc.spaced : ''; recBroadcast({ type: 'a5_status', data: d }); }, 3000);
+
 wss.on('connection', function(ws, req) {
   log('Client connected from ' + req.socket.remoteAddress);
   var clientId      = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
@@ -1368,7 +1406,7 @@ wss.on('connection', function(ws, req) {
 
   ws.send(JSON.stringify({
     type: 'init',
-    data: { operators: operators, activeOpIds: activeOpIds, vtyPorts: VTY_PORTS, tsharkActive: tsharkActiveClients > 0 },
+    data: { operators: operators, activeOpIds: activeOpIds, vtyPorts: VTY_PORTS, tsharkActive: tsharkActiveClients > 0, a5: readA5Status() },
     ts: Date.now(),
   }));
 
@@ -1399,6 +1437,8 @@ wss.on('connection', function(ws, req) {
         ws.send(JSON.stringify({ type: 'mic_state', data: { on: false, reason: '' }, ts: Date.now() }));
         break;
       case 'poll':                   pollAll();                                        break;
+      case 'record_start':           recorder.start(msg.source, { m: msg.m, t: msg.t }, ws); break;
+      case 'record_stop':            recorder.stop(ws);                               break;
     }
   });
 
