@@ -18,15 +18,7 @@ const fs   = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-// CHEMINS FIXES, identiques a ceux que le pont ecrit et que server.js connait
-// deja pour ses panes FFT. On ne cherche donc plus « le dernier air_pont_* » :
-// il n'y a qu'UN fichier par sens, continu, ecrase a chaque run.
-// ⚠️ On lit le cfile DISQUE (/root/record*.cfile), PAS le miroir /dev/shm : ce
-// dernier reboucle tous les 256 Mo pour la pane FFT, ce qui invaliderait des
-// offsets de decoupe.
-const DL_FILE   = process.env.PONT_AIRREC_DL_PATH || '/root/record.cfile';
-const UL_FILE   = process.env.PONT_AIRREC_UL_PATH || '/root/record_ul.cfile';
-const AIR_DIR   = require('path').dirname(DL_FILE);
+const AIR_DIR   = process.env.PONT_AIRREC_DIR || '/root/osmo-rec';
 // ⚠️ Ancrés sur 14 chiffres : 'air_pont_' est un PRÉFIXE de 'air_pont_ul_', un
 // simple startsWith ferait passer le montant pour du descendant.
 const SEG_RE    = /^air_pont_\d{14}\.cfile$/;
@@ -46,7 +38,12 @@ const SOURCES = {
 
 let cur = null;
 
-function fichierCourant(p) { try { fs.statSync(p); return p; } catch (e) { return null; } }
+function fichierCourant(re) {
+  try {
+    const l = fs.readdirSync(AIR_DIR).filter(function (f) { return re.test(f); }).sort();
+    return l.length ? path.join(AIR_DIR, l[l.length - 1]) : null;
+  } catch (e) { return null; }
+}
 function taille(p) { try { return p ? fs.statSync(p).size : 0; } catch (e) { return 0; } }
 function align8(n) { return n - (n % BPS); }
 
@@ -127,13 +124,13 @@ module.exports = function (deps) {
 
     // On DIT pourquoi ça ne peut pas marcher, au lieu de rendre un fichier vide.
     if (!pontPid()) { fail(ws, 'pont.py absent : rien n\'enregistre. Lance la pile en CALYPSO_BRIDGE=pont.'); return; }
-    const dlFile = fichierCourant(DL_FILE);
+    const dlFile = fichierCourant(SEG_RE);
     if (!dlFile) {
-      fail(ws, DL_FILE + ' absent : AIRREC est coupé (PONT_AIRREC=0), le pont tourne sur '
-             + 'du code antérieur, ou le disque est plein — voir /dev/shm/pont.log');
+      fail(ws, 'aucun fichier air_pont_* dans ' + AIR_DIR + ' : AIRREC est coupé (PONT_AIRREC=0), '
+             + 'ou le disque est plein — voir /dev/shm/pont.log');
       return;
     }
-    const ulFile = fichierCourant(UL_FILE);
+    const ulFile = fichierCourant(SEG_UL_RE);
     var m = (MODES.indexOf(opts.m) >= 0) ? opts.m : cfg.m;
     var t = (opts.t != null && opts.t >= 0 && opts.t <= 7) ? (opts.t | 0) : cfg.t;
     cur = { source: source, cfg: cfg, m: m, t: t, kcManual: sanitizeKc(opts.kc),
@@ -177,11 +174,11 @@ module.exports = function (deps) {
     clearInterval(c.timer);
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
     const dl = tranche(c.dlFile, c.dlStart, align8(taille(c.dlFile)), 'dl', stamp);
-    // MONTANT REMIS. J'ai signale que grgsm_decode ne sait pas demoduler une
-    // capture montante (il se cale sur FCCH/SCH, qui n'existent qu'en
-    // descendant) ; l'operateur veut le fichier et les commandes malgre tout.
-    // Elles sont donc fournies, avec l'avertissement conserve dans le hint.
-    const ul = tranche(c.ulFile, c.ulStart, align8(taille(c.ulFile)), 'ul', stamp);
+    // MONTANT RETIRE DES SUGGESTIONS. Proposer une commande grgsm sur une capture
+    // montante etait un piege : l'outil ne sait pas la decoder (il se cale sur
+    // FCCH/SCH, descendants). Le montant s'observe par le TAP GSMTAP du pont,
+    // en L2 deja decodee — port 4729 par defaut.
+    const ul = null;
 
     const kc = c.kcManual
       ? { present: true, algo: 1, spaced: c.kcManual, compact: c.kcManual, fromCache: false, ageMs: 0, manual: true }
@@ -203,8 +200,7 @@ module.exports = function (deps) {
       cmdUlCiphered: cmdsUl.ciphered, cmdUlDeciphered: cmdsUl.deciphered,
       note: note || '',
       hint: '① extraire la tranche (une commande, depuis l\'HÔTE : elle sort le fichier du conteneur) ② décoder. '
-          + 'DESCENDANT = ce que la BTS émet (SMS MT) · MONTANT = ce que le mobile émet (SMS MO). '
-          + '⚠️ grgsm_decode ne démodule PAS le montant (il se cale sur FCCH/SCH, descendants) : pour lire le MO, le tap GSMTAP du pont sur udp/4729 donne la L2 déjà décodée. '
+          + 'Le cfile ne porte que le DESCENDANT (le SMS MT y est). Pour le MONTANT — donc le SMS MO — regarde le tap GSMTAP du pont sur udp/4729 : aucun outil ne sait démoduler un enregistrement montant. '
           + '⚠️ I/Q RECONSTRUITE à partir des bits (ni bruit, ni ToA réelle, ni fading) : rejeu fidèle aux BITS, pas une capture d\'air. '
           + 'Une seule instance de grgsm_decode à la fois (elle bind UDP 4729).',
     } });

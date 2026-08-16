@@ -1551,33 +1551,19 @@ function setRec(on){ recRunning=on; var t=document.getElementById('tag-rec'), b=
 function onRecStatus(d){ setRec(!!d.running); if(d.running){var t=document.getElementById('tag-rec'); if(t)t.textContent='REC ● '+recFmtBytes(d.bytes)+' / '+(d.seconds||0)+'s';} }
 function recCopy(id){ var el=document.getElementById(id); if(el&&navigator.clipboard)navigator.clipboard.writeText(el.textContent); }
 function onRecResult(d){ setRec(false); var box=document.getElementById('rec-result'); if(!box)return;
-  var kc=d.kcPresent?('🔒 Kc (A5/'+d.kcAlgo+') = '+d.kc+(d.kcFromCache?(' (capté il y a '+Math.round((d.kcAgeMs||0)/1000)+'s)'):(d.kcManual?' (saisi)':' (live)'))):'Kc absent — lance une session chiffrée puis re-record';
-  function bloc(tag,cls,id,txt){ return txt?('<div class="rec-cmd"><span class="rec-tag '+cls+'">'+tag+'</span> <button class="btn" onclick="recCopy(\''+id+'\')">copier</button><div><code id="'+id+'"></code></div></div>'):''; }
+  var kc=d.kcPresent?('🔒 Kc (A5/'+d.kcAlgo+') = '+d.kc+(d.kcFromCache?(' (capturé il y a '+Math.round((d.kcAgeMs||0)/1000)+'s)'):(d.kcManual?' (saisi manuellement)':' (live)'))):'Kc absent — lance une session chiffrée puis re-record';
   box.style.display='block';
   box.innerHTML=
-   '<div class="rec-h">⏺ tranche enregistrée<button class="btn" onclick="document.getElementById(\'rec-result\').style.display=\'none\'">✕</button></div>'+
-   '<div class="rec-row"><b>Source</b> <code>'+(d.srcFile||'?')+'</code> — fichier <b>continu</b>, offset '+(d.offset||0)+'</div>'+
-   '<div class="rec-row"><b>Tranche DL</b> '+recFmtBytes(d.bytes)+' · '+d.seconds+'s · -m '+(d.mode||'?')+' -t '+(d.timeslot!=null?d.timeslot:'?')+(d.note?' · '+d.note:'')+'</div>'+
+   '<div class="rec-h">⏺ cfile enregistré<button class="btn" onclick="document.getElementById(\'rec-result\').style.display=\'none\'">✕</button></div>'+
+   '<div class="rec-row"><b>Path</b> <code id="rec-path"></code> <button class="btn" onclick="recCopy(\'rec-path\')">copier</button></div>'+
+   '<div class="rec-row"><b>Taille</b> '+recFmtBytes(d.bytes)+' · '+d.seconds+'s · source '+d.source+' -m '+(d.mode||'?')+' -t '+(d.timeslot!=null?d.timeslot:'?')+(d.note?' · '+d.note:'')+'</div>'+
    '<div class="rec-row">'+kc+'</div>'+
-   bloc('1. EXTRAIRE — depuis l\'HÔTE','ciph','rec-dd',d.ddCmd)+
-   bloc('(sortie du conteneur : incluse dans la commande ci-dessus)','ciph','rec-cp',d.cpCmd)+
-   bloc('2. DECIPHERED','deciph','rec-cmd-d',d.cmdDeciphered)+
-   bloc('2. CIPHERED','ciph','rec-cmd-c',d.cmdCiphered)+
-   (d.pathUl?('<div class="rec-row" style="margin-top:10px"><b>Tranche MONTANTE</b> '+recFmtBytes(d.bytesUl||0)+' — le SMS <b>MO</b> est dans ce sens'+
-    '<br><span style="opacity:.75;font-size:11px">\u26a0\ufe0f grgsm_decode ne démodule pas le montant (pas de FCCH/SCH) — pour lire le MO, tap GSMTAP udp/4729.</span></div>'+
-    bloc('UL 1. EXTRAIRE','ciph','rec-dd-u',d.ddCmdUl)+
-    bloc('UL 2. DECIPHERED','deciph','rec-cmd-ud',d.cmdUlDeciphered)+
-    bloc('UL 2. CIPHERED','ciph','rec-cmd-uc',d.cmdUlCiphered)):'');
-  function put(id,txt){ var e=document.getElementById(id); if(e)e.textContent=txt||''; }
-  put('rec-dd',d.ddCmd); put('rec-cp',d.cpCmd);
-  put('rec-cmd-d',d.cmdDeciphered); put('rec-cmd-c',d.cmdCiphered);
-  put('rec-dd-u',d.ddCmdUl); put('rec-cp-u',d.cpCmdUl);
-  put('rec-cmd-ud',d.cmdUlDeciphered); put('rec-cmd-uc',d.cmdUlCiphered);
-  if(d.hint){ box.innerHTML+='<div class="rec-row" style="opacity:.8;font-size:11px;margin-top:6px">'+d.hint+'</div>';
-              put('rec-dd',d.ddCmd); put('rec-cp',d.cpCmd);
-              put('rec-cmd-d',d.cmdDeciphered); put('rec-cmd-c',d.cmdCiphered);
-              put('rec-dd-u',d.ddCmdUl); put('rec-cp-u',d.cpCmdUl);
-              put('rec-cmd-ud',d.cmdUlDeciphered); put('rec-cmd-uc',d.cmdUlCiphered); }
+   '<div class="rec-cmd"><span class="rec-tag deciph">DECIPHERED</span> <button class="btn" onclick="recCopy(\'rec-cmd-d\')">copier</button><div><code id="rec-cmd-d"></code></div></div>'+
+   '<div class="rec-cmd"><span class="rec-tag ciph">CIPHERED</span> <button class="btn" onclick="recCopy(\'rec-cmd-c\')">copier</button><div><code id="rec-cmd-c"></code></div></div>';
+  document.getElementById('rec-path').textContent=d.path;
+  document.getElementById('rec-cmd-d').textContent=d.cmdDeciphered;
+  document.getElementById('rec-cmd-c').textContent=d.cmdCiphered;
+  if(d.hint){ box.innerHTML+='<div class="rec-row" style="opacity:.8;font-size:11px;margin-top:6px">\u26a0\ufe0f '+d.hint+'</div>'; }
 }
 </script>
 </body>

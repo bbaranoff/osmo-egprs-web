@@ -1562,12 +1562,7 @@ function onRecResult(d){ setRec(false); var box=document.getElementById('rec-res
    bloc('1. EXTRAIRE — depuis l\'HÔTE','ciph','rec-dd',d.ddCmd)+
    bloc('(sortie du conteneur : incluse dans la commande ci-dessus)','ciph','rec-cp',d.cpCmd)+
    bloc('2. DECIPHERED','deciph','rec-cmd-d',d.cmdDeciphered)+
-   bloc('2. CIPHERED','ciph','rec-cmd-c',d.cmdCiphered)+
-   (d.pathUl?('<div class="rec-row" style="margin-top:10px"><b>Tranche MONTANTE</b> '+recFmtBytes(d.bytesUl||0)+' — le SMS <b>MO</b> est dans ce sens'+
-    '<br><span style="opacity:.75;font-size:11px">\u26a0\ufe0f grgsm_decode ne démodule pas le montant (pas de FCCH/SCH) — pour lire le MO, tap GSMTAP udp/4729.</span></div>'+
-    bloc('UL 1. EXTRAIRE','ciph','rec-dd-u',d.ddCmdUl)+
-    bloc('UL 2. DECIPHERED','deciph','rec-cmd-ud',d.cmdUlDeciphered)+
-    bloc('UL 2. CIPHERED','ciph','rec-cmd-uc',d.cmdUlCiphered)):'');
+   bloc('2. CIPHERED','ciph','rec-cmd-c',d.cmdCiphered);
   function put(id,txt){ var e=document.getElementById(id); if(e)e.textContent=txt||''; }
   put('rec-dd',d.ddCmd); put('rec-cp',d.cpCmd);
   put('rec-cmd-d',d.cmdDeciphered); put('rec-cmd-c',d.cmdCiphered);
