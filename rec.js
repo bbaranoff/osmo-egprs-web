@@ -1,23 +1,75 @@
-// rec.js — capture IQ (cfile) d'une fifo relais LIBRE + génère la commande grgsm_decode.
-// [2026-08-15] Ajout « Capture IQ » du dashboard : record/stop -> path + commande
-// grgsm_decode selon le type (ciphered = sans clé, deciphered = -e/-k <Kc live>).
-// Sources = fifos IQ air SANS consommateur (le relais y fan-out le DL) : lecture
-// sûre, ne vole aucune donnée à un décodeur vivant.
+// rec.js — « Capture IQ » du dashboard : découpe une TRANCHE dans l'enregistrement
+// permanent du pont (AIRREC) et génère la commande grgsm_decode.
+//
+// [2026-08-16] RÉÉCRIT. L'ancienne version lisait /tmp/iq_grgsm_ciph.fifo, une
+// fifo « relais » qui N'A PLUS AUCUN PRODUCTEUR en mode CALYPSO_BRIDGE=pont : le
+// pont a remplacé toute la chaîne IQ par du burst-level TRXD. `fs.existsSync`
+// voyait bien le nœud de la fifo, donc aucune erreur n'était levée — on ouvrait
+// un flux qui ne délivrait jamais rien et on rendait un cfile de 0 octet, sans
+// le moindre message. Un échec silencieux qui a l'air d'un succès.
+//
+// LE NOUVEAU CONTRAT. pont.py (AIRREC) écrit le DESCENDANT en continu dans
+// /dev/shm/osmo-rec, en segments de 256 Mio nommés air_pont_<UTC>.cfile — donc
+// triables lexicographiquement = chronologiquement. On ne recopie plus rien :
+//   start -> SIGUSR1 au pont : il clôt le segment courant et en ouvre un neuf.
+//   stop  -> SIGUSR1 à nouveau : il clôt CE segment-là.
+// La capture est l'ensemble des segments nés entre les deux. Zéro copie, zéro
+// risque de voler des données à un décodeur vivant, et le fichier est déjà au
+// bon format et à la bonne durée.
+//
+// ⚠️ CE N'EST PAS UNE CAPTURE D'AIR — l'I/Q d'AIRREC est RECONSTRUITE à partir
+// des bits que la BTS a émis : ni bruit, ni ToA réelle, ni fading, ni
+// interférence. La décoder rend exactement les bits dont elle est issue. C'est
+// un rejeu fidèle aux BITS, utile pour rejouer et démontrer, et ça ne prouve pas
+// ce qui est passé sur l'air. Le dashboard doit le dire à l'utilisateur.
 const fs   = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
-const REC_DIR   = '/dev/shm/osmo-rec';       // PAS /tmp (porte les logs, piège tmpfs)
+const AIR_DIR   = process.env.PONT_AIRREC_DIR || '/dev/shm/osmo-rec';
+const SEG_RE    = /^air_pont_\d{14}\.cfile$/;
 const SAMP      = 1083333;
-const MAX_BYTES = 512 * 1024 * 1024;         // garde-fou ~60 s d'IQ
+const MAX_SEGS  = 8;                         // garde-fou : ~4 min / 2 Gio
 const KC_PATH   = '/dev/shm/calypso_kc';     // [4]algo [6..13]Kc(8)
+const SPLIT_MS  = 3000;                      // attente max d'un nouveau segment
 
 const MODES = ['BCCH', 'BCCH_SDCCH4', 'SDCCH8', 'TCHF', 'TCHH'];
+// AIRREC enregistre les 8 timeslots dans le MÊME fichier : la « source » ne
+// choisit plus une fifo, seulement les valeurs par défaut de -m / -t / -a.
 const SOURCES = {
-  sdcch: { fifo: '/tmp/iq_grgsm_ciph.fifo',     m: 'BCCH_SDCCH4', t: 0, a: 514 },
-  tch:   { fifo: '/tmp/iq_grgsm_tch_ciph.fifo', m: 'TCHF',        t: 3, a: 514, d: 'FR' },
+  sdcch: { m: 'BCCH_SDCCH4', t: 0, a: 514 },
+  tch:   { m: 'TCHF',        t: 2, a: 514, d: 'FR' },
 };
 
 let cur = null;
+
+function segList() {
+  try { return fs.readdirSync(AIR_DIR).filter(function (f) { return SEG_RE.test(f); }).sort(); }
+  catch (e) { return []; }
+}
+
+function pontPid() {
+  try {
+    const out = execFileSync('pgrep', ['-f', 'pont\\.py$']).toString().split('\n')[0].trim();
+    return out ? parseInt(out, 10) : 0;
+  } catch (e) { return 0; }
+}
+
+// Demande une rotation et ATTEND qu'elle ait eu lieu. Sans cette attente on
+// noterait le nom de l'ancien segment et la tranche serait décalée d'un segment.
+function splitAndWait(pid) {
+  const before = segList();
+  const last = before.length ? before[before.length - 1] : '';
+  try { process.kill(pid, 'SIGUSR1'); } catch (e) { return null; }
+  const deadline = Date.now() + SPLIT_MS;
+  while (Date.now() < deadline) {
+    const now = segList();
+    const nl = now.length ? now[now.length - 1] : '';
+    if (nl && nl !== last) return nl;
+    try { execFileSync('sleep', ['0.05']); } catch (e) {}
+  }
+  return null;
+}
 
 function readKc(getLastKc) {
   try {
@@ -41,8 +93,7 @@ function buildCmds(cfg, file, kc, m, t) {
   const base = 'grgsm_decode -m ' + m + ' -t ' + t + ' -a ' + cfg.a + ' -s ' + SAMP +
                (isTch ? ' -d FR' : '') + ' -c ' + file + ' -v';
   return {
-    // CIPHERED : bursts bruts démodulés (-p), SANS clé -> la garbage vue sur l'air,
-    // exactement comme une vraie capture d'un canal chiffré A5/1.
+    // CIPHERED : bursts bruts démodulés (-p), SANS clé.
     ciphered:   base + ' -p',
     // DECIPHERED : avec la clé -> le clair.
     deciphered: kc.present ? (base + ' -e ' + kc.algo + ' -k ' + kc.spaced)
@@ -57,41 +108,69 @@ function sanitizeKc(str) {
   return m.slice(0, 8).map(function (b) { return b.toLowerCase(); }).join(' ');
 }
 
+function sliceBytes(segs) {
+  var n = 0;
+  for (var i = 0; i < segs.length; i++) {
+    try { n += fs.statSync(path.join(AIR_DIR, segs[i])).size; } catch (e) {}
+  }
+  return n;
+}
+
 module.exports = function (deps) {
   const broadcast = deps.broadcast;
   const log = deps.log || function () {};
   const getLastKc = deps.getLastKc || function () { return null; };
 
+  function liveBytes() {
+    if (!cur) return 0;
+    return sliceBytes(segList().filter(function (s) { return s >= cur.firstSeg; }));
+  }
+
   function status() {
     return cur
-      ? { running: true, source: cur.source, bytes: cur.bytes,
-          seconds: Math.round((Date.now() - cur.startMs) / 1000), path: cur.file }
+      ? { running: true, source: cur.source, bytes: liveBytes(),
+          seconds: Math.round((Date.now() - cur.startMs) / 1000), path: cur.firstPath }
       : { running: false };
   }
   function bcastStatus() { broadcast({ type: 'rec_status', data: status() }); }
 
+  function fail(ws, msg) {
+    if (ws) ws.send(JSON.stringify({ type: 'rec_error', data: { msg: msg }, ts: Date.now() }));
+    log('rec ERREUR : ' + msg);
+  }
+
   function start(source, opts, ws) {
     opts = opts || {};
-    if (cur) { ws.send(JSON.stringify({ type: 'rec_error', data: { msg: 'enregistrement déjà en cours' }, ts: Date.now() })); return; }
+    if (cur) { fail(ws, 'enregistrement déjà en cours'); return; }
     const cfg = SOURCES[source] || SOURCES.sdcch;
-    if (!fs.existsSync(cfg.fifo)) { ws.send(JSON.stringify({ type: 'rec_error', data: { msg: 'fifo absente : ' + cfg.fifo }, ts: Date.now() })); return; }
-    try { fs.mkdirSync(REC_DIR, { recursive: true }); } catch (e) {}
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    const file = path.join(REC_DIR, 'air_' + source + '_' + stamp + '.cfile');
-    let rs, out;
-    try { rs = fs.createReadStream(cfg.fifo); out = fs.createWriteStream(file); }
-    catch (e) { ws.send(JSON.stringify({ type: 'rec_error', data: { msg: 'open: ' + e.message }, ts: Date.now() })); return; }
+
+    // On DIT pourquoi ça ne peut pas marcher, au lieu de rendre un fichier vide.
+    const pid = pontPid();
+    if (!pid) { fail(ws, 'pont.py absent : rien n\'enregistre. Lance la pile en CALYPSO_BRIDGE=pont.'); return; }
+    const seg0 = segList();
+    if (!seg0.length) {
+      fail(ws, 'aucun segment dans ' + AIR_DIR + ' : AIRREC est coupé (PONT_AIRREC=0) ou /dev/shm est plein — voir /dev/shm/pont.log');
+      return;
+    }
+
+    const firstSeg = splitAndWait(pid);
+    if (!firstSeg) {
+      fail(ws, 'le pont n\'a pas ouvert de nouveau segment après SIGUSR1 (pid ' + pid + ') — voir /dev/shm/pont.log');
+      return;
+    }
     var m = (MODES.indexOf(opts.m) >= 0) ? opts.m : cfg.m;
     var t = (opts.t != null && opts.t >= 0 && opts.t <= 7) ? (opts.t | 0) : cfg.t;
-    cur = { source: source, cfg: cfg, file: file, rs: rs, out: out, bytes: 0, startMs: Date.now(), owner: ws, m: m, t: t, kcManual: sanitizeKc(opts.kc) };
-    rs.on('data', function (chunk) {
-      cur.bytes += chunk.length;
-      out.write(chunk);
-      if (cur.bytes >= MAX_BYTES) stop(ws, 'plafond ' + MAX_BYTES + ' o atteint');
-    });
-    rs.on('error', function (e) { log('rec read err ' + e.message); stop(ws, 'erreur lecture: ' + e.message); });
-    cur.timer = setInterval(bcastStatus, 1000);
-    log('rec start ' + file + ' <- ' + cfg.fifo);
+    cur = { source: source, cfg: cfg, pid: pid, firstSeg: firstSeg,
+            firstPath: path.join(AIR_DIR, firstSeg), startMs: Date.now(),
+            owner: ws, m: m, t: t, kcManual: sanitizeKc(opts.kc) };
+    cur.timer = setInterval(function () {
+      // Plafond en SEGMENTS : AIRREC purge les vieux, une capture trop longue
+      // se ferait manger par sa propre rotation sans qu'on s'en aperçoive.
+      const segs = segList().filter(function (s) { return s >= cur.firstSeg; });
+      if (segs.length > MAX_SEGS) { stop(cur.owner, 'plafond ' + MAX_SEGS + ' segments atteint'); return; }
+      bcastStatus();
+    }, 1000);
+    log('rec start (tranche AIRREC) depuis ' + firstSeg);
     bcastStatus();
   }
 
@@ -99,21 +178,42 @@ module.exports = function (deps) {
     if (!cur) { if (ws) ws.send(JSON.stringify({ type: 'rec_status', data: { running: false }, ts: Date.now() })); return; }
     const c = cur; cur = null;
     clearInterval(c.timer);
-    try { c.rs.destroy(); } catch (e) {}
-    try { c.out.end(); } catch (e) {}
+
+    // Clôt le segment courant pour le figer. Si le pont est mort entre-temps, on
+    // prend ce qui existe : mieux vaut une tranche tronquée qu'aucun résultat.
+    const nextSeg = splitAndWait(c.pid);
+    var segs = segList().filter(function (s) {
+      return s >= c.firstSeg && (!nextSeg || s < nextSeg);
+    });
+    if (!segs.length) segs = [c.firstSeg];
+
+    const files = segs.map(function (s) { return path.join(AIR_DIR, s); });
+    const bytes = sliceBytes(segs);
+    // Plusieurs segments = un flux contigu : les concaténer est valide, un cfile
+    // fc32 n'a pas d'en-tête. On fournit la commande plutôt que de recopier
+    // 2 Gio nous-mêmes dans un tmpfs déjà chargé.
+    var target = files[0], merge = '';
+    if (files.length > 1) {
+      target = path.join(AIR_DIR, 'merged_' + c.firstSeg.replace('air_pont_', '').replace('.cfile', '') + '.cfile');
+      merge = 'cat ' + files.join(' ') + ' > ' + target;
+    }
     const kc = c.kcManual
       ? { present: true, algo: 1, spaced: c.kcManual, fromCache: false, ageMs: 0, manual: true }
       : readKc(getLastKc);
-    const cmds = buildCmds(c.cfg, c.file, kc, c.m, c.t);
+    const cmds = buildCmds(c.cfg, target, kc, c.m, c.t);
     broadcast({ type: 'rec_result', data: {
-      path: c.file, bytes: c.bytes, seconds: Math.round((Date.now() - c.startMs) / 1000),
+      path: target, files: files, merge: merge, bytes: bytes,
+      seconds: Math.round((Date.now() - c.startMs) / 1000),
       source: c.source, mode: c.m, timeslot: c.t, kcPresent: kc.present, kcAlgo: kc.algo, kc: kc.spaced,
       kcFromCache: kc.fromCache || false, kcAgeMs: kc.ageMs || 0, kcManual: kc.manual || false,
-      cmdCiphered: cmds.ciphered, cmdDeciphered: cmds.deciphered, note: note || '',
-      hint: 'Port GSMTAP 4729 requis LIBRE pour décoder : stoppe le décodeur SDCCH live (pgrep -f "grgsm_decode -m BCCH_SDCCH4") ou décode sur une autre machine, sinon "bind: Address already in use".',
+      cmdCiphered: cmds.ciphered, cmdDeciphered: cmds.deciphered,
+      note: (note ? note + ' · ' : '') + (merge ? files.length + ' segments — concatène d\'abord' : ''),
+      hint: '⚠️ I/Q RECONSTRUITE à partir des bits émis par la BTS (ni bruit, ni ToA réelle, ni fading) : rejeu fidèle aux BITS, PAS une capture d\'air. '
+          + 'Les 8 timeslots sont dans le même fichier — change -t pour en viser un autre. '
+          + 'Port GSMTAP 4729 requis LIBRE pour décoder : stoppe le décodeur live (pgrep -f "grgsm_decode") sinon "bind: Address already in use".',
     } });
     bcastStatus();
-    log('rec stop ' + c.file + ' ' + c.bytes + ' o');
+    log('rec stop : ' + files.length + ' segment(s), ' + bytes + ' o');
   }
 
   return { start: start, stop: stop, status: status };

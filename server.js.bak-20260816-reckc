@@ -1488,11 +1488,7 @@ wss.on('connection', function(ws, req) {
         ws.send(JSON.stringify({ type: 'mic_state', data: { on: false, reason: '' }, ts: Date.now() }));
         break;
       case 'poll':                   pollAll();                                        break;
-      // [2026-08-16] `kc` etait JETE ici : l'interface l'envoyait bien
-      // (index.html toggleRec -> kc: document.getElementById('rec-kc').value)
-      // mais il n'entrait pas dans opts, donc rec.js retombait toujours sur le
-      // Kc capture automatiquement et le champ de saisie n'avait AUCUN effet.
-      case 'record_start':           recorder.start(msg.source, { m: msg.m, t: msg.t, kc: msg.kc }, ws); break;
+      case 'record_start':           recorder.start(msg.source, { m: msg.m, t: msg.t }, ws); break;
       case 'record_stop':            recorder.stop(ws);                               break;
     }
   });

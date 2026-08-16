@@ -1539,9 +1539,7 @@ function updateA5(a){ var el=document.getElementById('tag-a5'); if(!el)return;
   var on=((a.mode||'').replace(/\s/g,'').toLowerCase()==='a51')||a.algo>=1;
   el.textContent=on?('🔒 A5/'+(a.algo>=1?a.algo:1)+(a.active?' ●':'')):'🔓 clair (A5/0)';
   el.className='htag a5tag '+(on?'a5on':'a5off')+(a.active?' a5live':'');
-  el.title='Mode de SESSION (osmo-bsc encryption) = '+(a.mode||'?')
-          +' · clé observée ce run : '+(a.active?('oui, A5/'+a.algo):'pas encore')
-          +' — le badge suit la session, pas les trames';
+  el.title='ENCRYPTION='+(a.mode||'?')+' · Kc '+(a.active?('present, A5/'+a.algo):'absent (idle/efface)');
   window._lastKc=a.lastKc||window._lastKc||''; var kf=document.getElementById('rec-kc'); if(kf) kf.placeholder=window._lastKc?('Kc auto: '+window._lastKc):'Kc auto (aucun capté)'; }
 function toggleRec(){ if(recRunning){send({type:'record_stop'});} else {send({type:'record_start',source:document.getElementById('rec-src').value,m:document.getElementById('rec-m').value,t:parseInt(document.getElementById('rec-t').value,10),kc:document.getElementById('rec-kc').value});} }
 function fillKc(){ var kf=document.getElementById('rec-kc'); if(kf&&window._lastKc) kf.value=window._lastKc; }

@@ -1378,72 +1378,21 @@ setInterval(function () {
 }, 250);
 const recorder = require('./rec.js')({ broadcast: recBroadcast, log: log, getLastKc: function () { return lastKc; } });
 
-// ─── État chiffrement A5 (badge dashboard) : état de SESSION, pas de trame ────
-// [2026-08-16] LE BADGE OSCILLAIT ENTRE A5/0 ET A5/1. Deux défauts, tous deux la
-// même erreur de nature : on affichait un état de TRAME là où l'opérateur attend
-// l'état de la SESSION.
-//   1. `mode` était lu dans l'environnement de `calypso-ipc-device`, qui
-//      N'EXISTE PAS en mode CALYPSO_BRIDGE=pont (start-direct.sh pose
-//      SKIP_IPC_DEVICE=1). Le pgrep échouait, `mode` restait '?', et le badge ne
-//      voyait donc JAMAIS l'a5/1 dans ce mode.
-//   2. `algo`/`active` étaient recalculés toutes les 3 s en RELISANT
-//      /dev/shm/calypso_kc. Ce fichier est transitoire par construction : purgé
-//      au démarrage du pont, effacé au teardown, et absent tant qu'aucun
-//      CIPHERING MODE COMMAND n'est passé. Le badge suivait donc la présence
-//      d'une clé À UN INSTANT — d'où la bascule A5/0 ↔ A5/1 en cours de session.
-// Désormais : le mode vient de l'AUTORITÉ (la directive `encryption` d'osmo-bsc,
-// c'est elle qui décide de ce qui se passe sur l'air), et « une clé a été vue »
-// est VERROUILLÉ pour la durée du run. Le verrou n'est relâché qu'au changement
-// de run, détecté par le PID d'osmo-bsc — sinon un badge « A5/1 vu » survivrait
-// à une relance en a5/0 et mentirait dans l'autre sens.
-var A5_BSC_CFG = process.env.OSMO_BSC_CFG || '/etc/osmocom/osmo-bsc.cfg';
-var a5Latch = { run: null, seen: false, algo: 0, mode: '?' };
-
-function a5StackRunId() {
-  // Identité du run : le PID d'osmo-bsc change à chaque relance de la pile.
-  try { return execFileSync('pgrep', ['-f', 'osmo-bsc -c']).toString().split('\n')[0].trim(); }
-  catch (e) { return ''; }
-}
-
-function a5SessionMode() {
-  // 1) L'autorité : ce que le BSC impose réellement sur l'air.
-  try {
-    var m = fs.readFileSync(A5_BSC_CFG, 'utf8').match(/^[ \t]*encryption[ \t]+a5[ \t]+([0-9 \t]+)/m);
-    if (m) return 'a5 ' + m[1].trim().replace(/[ \t]+/g, ' ');
-  } catch (e) {}
-  // 2) Secours : ENCRYPTION= dans l'environnement d'un process de la pile. La
-  //    liste couvre les modes où tel ou tel composant n'existe pas — l'ancien
-  //    code n'essayait QUE calypso-ipc-device, absent en mode pont.
-  var cands = ['calypso-ipc-device -u', 'pont/pont.py', 'osmo-bts-trx',
-               'qemu-system-arm.*calypso', 'run.sh'];
-  for (var c = 0; c < cands.length; c++) {
-    try {
-      var pid = execFileSync('pgrep', ['-f', cands[c]]).toString().split('\n')[0].trim();
-      if (!pid) continue;
-      var env = fs.readFileSync('/proc/' + pid + '/environ', 'utf8').split('\0');
-      for (var i = 0; i < env.length; i++)
-        if (env[i].indexOf('ENCRYPTION=') === 0) return env[i].slice(11);
-    } catch (e) {}
-  }
-  return '?';
-}
-
+// ─── État chiffrement A5 (badge dashboard) : ENCRYPTION du process + Kc live ──
 function readA5Status() {
-  var run = a5StackRunId();
-  if (run !== a5Latch.run) {
-    // Nouveau run : on relâche le verrou ET le cache de clé, sinon la clé du run
-    // précédent re-verrouillerait immédiatement le badge.
-    a5Latch = { run: run, seen: false, algo: 0, mode: a5SessionMode() };
-    lastKc = null;
-    log('[a5] nouveau run (osmo-bsc pid=' + (run || '?') + ') — badge remis à ' + a5Latch.mode);
-  }
-  if (lastKc && lastKc.algo >= 1) { a5Latch.seen = true; a5Latch.algo = lastKc.algo; }
-  // `algo` reflète le mode de session tant qu'aucune clé n'a été observée : sans
-  // ça le badge afficherait « clair » pendant toute la phase d'attachement d'un
-  // réseau pourtant configuré en a5/1.
-  var mAlgo = /a5\D*([1-3])/.exec(a5Latch.mode);
-  var algo = a5Latch.algo || (mAlgo ? parseInt(mAlgo[1], 10) : 0);
-  return { mode: a5Latch.mode, algo: algo, active: a5Latch.seen, session: true };
+  var mode = '?', algo = 0, active = false;
+  try {
+    var pid = execFileSync('pgrep', ['-f', 'calypso-ipc-device -u']).toString().split('\n')[0].trim();
+    if (pid) {
+      var env = fs.readFileSync('/proc/' + pid + '/environ', 'utf8').split('\0');
+      for (var i = 0; i < env.length; i++) if (env[i].indexOf('ENCRYPTION=') === 0) { mode = env[i].slice(11); break; }
+    }
+  } catch (e) {}
+  try {
+    var b = fs.readFileSync('/dev/shm/calypso_kc');
+    if (b.length >= 14) { algo = b[4]; active = (algo >= 1) && !b.slice(6, 14).every(function (x) { return x === 0; }); }
+  } catch (e) {}
+  return { mode: mode, algo: algo, active: active };
 }
 setInterval(function () { var d = readA5Status(); d.lastKc = lastKc ? lastKc.spaced : ''; recBroadcast({ type: 'a5_status', data: d }); }, 3000);
 
@@ -1488,11 +1437,7 @@ wss.on('connection', function(ws, req) {
         ws.send(JSON.stringify({ type: 'mic_state', data: { on: false, reason: '' }, ts: Date.now() }));
         break;
       case 'poll':                   pollAll();                                        break;
-      // [2026-08-16] `kc` etait JETE ici : l'interface l'envoyait bien
-      // (index.html toggleRec -> kc: document.getElementById('rec-kc').value)
-      // mais il n'entrait pas dans opts, donc rec.js retombait toujours sur le
-      // Kc capture automatiquement et le champ de saisie n'avait AUCUN effet.
-      case 'record_start':           recorder.start(msg.source, { m: msg.m, t: msg.t, kc: msg.kc }, ws); break;
+      case 'record_start':           recorder.start(msg.source, { m: msg.m, t: msg.t }, ws); break;
       case 'record_stop':            recorder.stop(ws);                               break;
     }
   });
