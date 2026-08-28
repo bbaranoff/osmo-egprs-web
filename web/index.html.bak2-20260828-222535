@@ -457,8 +457,10 @@
         <pre class="fft-log" id="log-ms"></pre>
       </div>
       <div class="fft-card">
-        <div class="fft-logh">grgsm <span style="font-weight:400"><a id="gg-clair" onclick="setGrgsm(&#39;bts_clair&#39;)" style="cursor:pointer;font-weight:700">clair</a> | <a id="gg-ciph" onclick="setGrgsm(&#39;bts_ciph&#39;)" style="cursor:pointer;font-weight:400">ciph</a></span></div>
-        <pre class="fft-log" id="log-bts"></pre>
+        <div class="fft-logh">grgsm clair</div>
+        <pre class="fft-log" id="log-bts_clair"></pre>
+        <div class="fft-logh">grgsm ciphered</div>
+        <pre class="fft-log" id="log-bts_ciph"></pre>
         <div class="fft-t" id="t-bts">BTS</div>
         <canvas id="c-bts" class="fft-psd"></canvas>
         <canvas id="w-bts" class="fft-wf"></canvas>
@@ -762,16 +764,9 @@ function ansiToHtml(s){
   if(st){out+='<span style="'+st+'">';open=true;}}
  out+=s.slice(last);if(open)out+='</span>';return out;}
 var fftLogTimer=null;
-var grgsmSrc='bts_clair';
-function setGrgsm(s){grgsmSrc=s;
-  var a=document.getElementById('gg-clair'),b=document.getElementById('gg-ciph');
-  if(a)a.style.fontWeight=(s==='bts_clair')?'700':'400';
-  if(b)b.style.fontWeight=(s==='bts_ciph')?'700':'400';
-  fftLogTick();}
-function fftLogTick(){[['ms','ms'],[grgsmSrc,'bts']].forEach(function(p){
-  var w=p[0],id=p[1];
+function fftLogTick(){['ms','bts_clair','bts_ciph'].forEach(function(w){
   fetch('/logtail?which='+w+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){
-   var el=document.getElementById('log-'+id);if(!el)return;
+   var el=document.getElementById('log-'+w);if(!el)return;
    var atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
    el.innerHTML=d.error?'<span style="color:#dc322f">'+d.error+'</span>':ansiToHtml(d.text||'');
    if(atBottom)el.scrollTop=el.scrollHeight;

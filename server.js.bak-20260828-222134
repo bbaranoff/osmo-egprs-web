@@ -1153,7 +1153,7 @@ const FFT_SRC = {
   // fonctionne donc meme avant que le producteur demarre.
   // Pour revenir au cfile (p.ex. shunt_legit avec CALYPSO_SHUNT_IQ_RECORD) :
   //   CFILE_MS=/dev/shm/dsp_iq.cfile
-  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq_fn.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP shunt legit (dsp_iq)' },
+  ms:  { path: process.env.CFILE_MS  || '/tmp/iq_fft_ms.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — montant (iq_fft_ms.fifo)' },
   bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
 };
 var fftState = {};                                                  // src -> { fd, buf:Buffer }
@@ -1162,9 +1162,7 @@ var fftState = {};                                                  // src -> { 
 // MS  : log du mobile osmocom (sous la FFT DSP).   BTS : log grgsm record (au-dessus de la FFT BTS).
 const FFT_LOG = {
   ms:  process.env.FFT_LOG_MS  || '/root/mobile.log',
-  bts:       process.env.FFT_LOG_BTS  || '/root/grgsm_clair.raw',
-  bts_clair: process.env.FFT_LOG_CLAIR|| '/root/grgsm_clair.raw',
-  bts_ciph:  process.env.FFT_LOG_CIPH || '/root/grgsm_ciph.raw',
+  bts: process.env.FFT_LOG_BTS || '/root/grgsm_clair.raw',
 };
 const FFT_LOG_BYTES = parseInt(process.env.FFT_LOG_BYTES || '16384', 10);   // queue lue par requête
 
@@ -1285,7 +1283,7 @@ function fftWelch(fl) {                                             // fl: Float
 // ce qui laisse shunt_legit (hors mode pont, producteur = calypso-ipc-device sur
 // /dev/shm/dsp_iq.cfile) fonctionner exactement comme avant.
 const FFT_FIFO_PREF = {
-  ms:  process.env.FIFO_MS  || '/dev/shm/dsp_iq.fifo',
+  ms:  process.env.FIFO_MS  || '/tmp/iq_fft_ms.fifo',
   bts: process.env.FIFO_BTS || '/tmp/iq_fft.fifo',
 };
 function fftPath(src, s) {
@@ -1340,7 +1338,7 @@ const httpServer = http.createServer(function(req, res) {
     return res.end(body);
   }
   if (req.url.split('?')[0] === '/logtail') { // queue des logs mobile (MS) / grgsm record (BTS)
-    var lm = /[?&]which=(ms|bts_clair|bts_ciph|bts)/.exec(req.url);
+    var lm = /[?&]which=(ms|bts)/.exec(req.url);
     var lb = Buffer.from(JSON.stringify(logTail(lm ? lm[1] : 'ms')));
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': lb.length });
     return res.end(lb);
