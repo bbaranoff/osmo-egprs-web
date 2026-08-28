@@ -63,7 +63,7 @@ fi
 # dashboard et a lui seul, et il se deplace, se sauvegarde et se supprime avec
 # lui. `tls/` est dans le .gitignore -- une cle privee publiee laisserait
 # n'importe qui se faire passer pour la console.
-TLS_DIR="${/etc/osmo-web-tls}"
+TLS_DIR="/etc/osmo-web-tls"
 TLS_CERT="${TLS_DIR}/cert.pem"
 TLS_KEY="${TLS_DIR}/key.pem"
 
