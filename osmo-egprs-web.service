@@ -32,7 +32,7 @@ Environment=AUDIO_SOURCE=gsm_audio.monitor
 # explicitement (un navigateur qui lit `https://<ip>` irait sur 443, ferme), et
 # `http://<ip>` ne repond plus en clair — c'est du TLS qui ecoute la.
 Environment=HTTPS_PORT=4444
-Environment=TLS_CERT=/etc/osmo-web-tls/tls/cert.pem
+Environment=TLS_CERT=/etc/osmo-web-tls/cert.pem
 Environment=TLS_KEY=/etc/osmo-web-tls/key.pem
 ExecStart=/usr/bin/node /opt/osmo-egprs-web/server.js --verbose
 Restart=on-failure
