@@ -93,7 +93,7 @@
 <main>
   <!-- MS : line on top, waterfall below -->
   <section class="group ms">
-    <div class="label" id="lbl-ms">MS — <b>Calypso DSP</b> (dsp_iq) · <span class="arf">ARFCN 514</span> · Fs 1.083 MHz</div>
+    <div class="label" id="lbl-ms">MS — <b>montant</b> (iq_fft_ms.fifo) · <span class="arf">ARFCN 514</span> · Fs 1.083 MHz</div>
     <canvas class="line" data-ch="ms"></canvas>
     <canvas class="wf"   data-ch="ms"></canvas>
   </section>
@@ -325,7 +325,7 @@ function applyMeta(ch, j){
   const el = document.getElementById('lbl-'+ch);
   if (!el || !j) return;
   const arf = j.arfcn ? j.arfcn : '514';
-  const who = ch === 'ms' ? 'MS — <b>Calypso DSP</b> (dsp_iq)' : 'BTS — <b>DL relay LIVE</b> (iq_fft.fifo)';
+  const who = ch === 'ms' ? 'MS — <b>montant</b> (iq_fft_ms.fifo)' : 'BTS — <b>DL relay LIVE</b> (iq_fft.fifo)';
   const fs  = j.rate ? (j.rate/1e6).toFixed(3) : '1.083';
   el.innerHTML = `${who} · <span class="arf">ARFCN ${arf}</span> · Fs ${fs} MHz`;
 }

@@ -1109,6 +1109,14 @@ const webDir = path.join(__dirname, 'web');
 const FFT_RATE     = parseFloat(process.env.RATE || '1083333');   // Fs natif = 26e6/24
 const FFT_NSAMP    = parseInt(process.env.NSAMP    || '262144', 10);
 const FFT_NFFT     = parseInt(process.env.NFFT     || '4096', 10);   // doit être une puissance de 2
+// DEUX LISSAGES, ET ILS NE COUTENT PAS PAREIL.
+// Welch moyenne en FREQUENCE : le cout est lineaire en segments (chacun est une
+// FFT de NFFT points), paye a CHAQUE requete. La moyenne exponentielle, elle,
+// lisse en TEMPS pour un cout d'une addition par point. Depuis qu'on
+// rafraichit trois fois plus vite, monter les segments a 32 revenait a payer
+// six fois le calcul d'avant pour un resultat que la constante de temps donne
+// presque gratuitement. On revient donc a 16, et c'est FFT_AVG_TAU_MS qui tient
+// la douceur.
 const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
 
 /* [2026-08-09] RENDU DES WATERFALLS PILOTE PAR LE SERVEUR.
@@ -1153,19 +1161,95 @@ const FFT_SRC = {
   // fonctionne donc meme avant que le producteur demarre.
   // Pour revenir au cfile (p.ex. shunt_legit avec CALYPSO_SHUNT_IQ_RECORD) :
   //   CFILE_MS=/dev/shm/dsp_iq.cfile
-  ms:  { path: process.env.CFILE_MS  || '/dev/shm/dsp_iq_fn.cfile', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — Calypso DSP shunt legit (dsp_iq)' },
+  //
+  // [2026-08-29] LA SOURCE MS SUIT ENFIN SON PRODUCTEUR.
+  // pont.py ecrit le montant dans /tmp/iq_fft_ms.fifo (PONT_AIRREC_UL_FIFO) et
+  // le dit depuis le 16/08 : « la pane lit desormais la FIFO /tmp/iq_fft_ms.fifo ».
+  // Cette table, elle, etait restee sur /dev/shm/dsp_iq_fn.cfile - un fichier
+  // que le mode pont ne remplit pas. Resultat a l'ecran : une seule FFT vivante
+  // au lieu de deux, et celle du MS montrait du bruit de fond a la place du
+  // spectre montant. Le pane s'appelait « Calypso DSP shunt legit » alors qu'il
+  // n'affichait aucun DSP : le nom designait un producteur qui ne produisait
+  // plus rien de ce cote-la.
+  ms:  { path: process.env.CFILE_MS  || '/tmp/iq_fft_ms.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — montant (iq_fft_ms.fifo)' },
   bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
 };
 var fftState = {};                                                  // src -> { fd, buf:Buffer }
 
 // Logs adossés à chaque spectre (queue brute, ANSI conservé → colorisé côté web).
 // MS  : log du mobile osmocom (sous la FFT DSP).   BTS : log grgsm record (au-dessus de la FFT BTS).
+// ═══ L'AIGUILLEUR DE JOURNAUX ═══════════════════════════════════════════════
+// Chaque entree etait UN chemin fige, et deux d'entre elles designaient des
+// fichiers qu'un seul producteur ecrit : si_bridge, qui NE TOURNE PAS en mode
+// pont (start-direct.sh pose CALYPSO_SKIP_BRIDGE_PY=1 — « le pont decode »).
+// La fenetre affichait donc « log absent (/root/grgsm_clair.raw) » en
+// permanence, quel que soit l'onglet, pendant que trois autres journaux
+// decrivaient la meme activite juste a cote.
+//
+// EXISTER NE SUFFIT PAS. Un premier essai retenait le premier chemin present :
+// il tombait sur un grgsm_clair.raw de 0 octet laisse par une capture d'il y a
+// deux heures, et la fenetre restait vide alors qu'un journal vivant attendait
+// juste derriere. On classe donc les candidats :
+//     1. non vide ET ecrit recemment  -> c'est celui qu'on veut
+//     2. non vide, meme ancien        -> mieux que rien, on le dit
+//     3. present mais vide            -> le producteur existe, il n'a rien dit
+//     4. absent                       -> on nomme le premier, pour que le
+//                                        message designe la source ATTENDUE
+// L'ordre DANS la liste garde la priorite a qualite egale : le flux grgsm
+// decode d'abord (c'est lui qu'on regarde pendant une capture), les traces du
+// pont ensuite, les journaux Osmocom en dernier.
+const FFT_LOG_FRESH_MS = parseInt(process.env.FFT_LOG_FRESH_MS || '120000', 10);
+
+// LOG_DIR n'est pas au meme endroit selon le lanceur (/tmp/osmo-nitb/logs,
+// /run/user/0/osmo-nitb/logs, /root/calypso/logs...). On sonde, une fois : un
+// chemin fige aurait rate le journal vivant sur la moitie des bancs.
+function logDirs() {
+  var d = [];
+  if (process.env.LOG_DIR) d.push(process.env.LOG_DIR);
+  d.push('/run/user/0/osmo-nitb/logs', '/tmp/osmo-nitb/logs', '/root/calypso/logs',
+         '/var/log/osmocom');
+  return d;
+}
+function inLogDirs(name) { return logDirs().map(function (d) { return d + '/' + name; }); }
+
 const FFT_LOG = {
-  ms:  process.env.FFT_LOG_MS  || '/root/mobile.log',
-  bts:       process.env.FFT_LOG_BTS  || '/root/grgsm_clair.raw',
-  bts_clair: process.env.FFT_LOG_CLAIR|| '/root/grgsm_clair.raw',
-  bts_ciph:  process.env.FFT_LOG_CIPH || '/root/grgsm_ciph.raw',
+  ms: (process.env.FFT_LOG_MS ? process.env.FFT_LOG_MS.split(',')
+       : ['/root/mobile.log'].concat(inLogDirs('mobile.log'))),
+  // Les trois entrees de la MEME fenetre (l'onglet clair/ciph choisit laquelle).
+  // Elles partagent la meme file de secours : ce qui compte est qu'un operateur
+  // voie TOUJOURS l'activite de la couche basse, meme sans capture grgsm.
+  bts: (process.env.FFT_LOG_BTS ? process.env.FFT_LOG_BTS.split(',')
+        : ['/root/grgsm_clair.raw'].concat(inLogDirs('grgsm_decode.log'))
+            .concat(['/dev/shm/pont.log'], inLogDirs('bts.log'),
+                    ['/var/log/osmocom/osmo-bts-trx.log', '/var/log/osmocom/osmo-bsc.log'])),
+  bts_clair: (process.env.FFT_LOG_CLAIR ? process.env.FFT_LOG_CLAIR.split(',')
+        : ['/root/grgsm_clair.raw'].concat(inLogDirs('grgsm_decode.log'))
+            .concat(['/dev/shm/pont.log'], inLogDirs('bts.log'),
+                    ['/var/log/osmocom/osmo-bts-trx.log', '/var/log/osmocom/osmo-bsc.log'])),
+  bts_ciph: (process.env.FFT_LOG_CIPH ? process.env.FFT_LOG_CIPH.split(',')
+        : ['/root/grgsm_ciph.raw'].concat(inLogDirs('grgsm_decode_ciph.log'))
+            .concat(['/dev/shm/pont.log'], inLogDirs('bts.log'),
+                    ['/var/log/osmocom/osmo-bts-trx.log', '/var/log/osmocom/osmo-bsc.log'])),
 };
+
+function logPath(which) {
+  var cands = FFT_LOG[which];
+  if (!cands || !cands.length) return null;
+  var now = Date.now(), vivant = null, plein = null, vide = null;
+  for (var i = 0; i < cands.length; i++) {
+    var c = (cands[i] || '').trim();
+    if (!c) continue;
+    var st;
+    try { st = fs.statSync(c); } catch (e) { continue; }
+    if (!st.isFile()) continue;
+    if (st.size > 0) {
+      if (!vivant && (now - st.mtimeMs) < FFT_LOG_FRESH_MS) vivant = c;
+      if (!plein) plein = c;
+    } else if (!vide) vide = c;
+  }
+  return vivant || plein || vide || (cands[0] || '').trim() || null;
+}
+
 const FFT_LOG_BYTES = parseInt(process.env.FFT_LOG_BYTES || '16384', 10);   // queue lue par requête
 
 // FFT itérative radix-2 (Cooley-Tukey), in-place sur re[]/im[] Float64Array.
@@ -1207,12 +1291,71 @@ function fftAlignedF32(buf, n) {
   return new Float32Array(a.buffer, 0, n >> 2);
 }
 
+// ─── Enregistrement continu du flux I/Q, depuis CE lecteur ──────────────────
+// rec.js sait deja DECOUPER des tranches dans /root/record.cfile, mais rien ne
+// le remplissait depuis le service web : ce fichier n'existe que si pont.py
+// tourne avec AIRREC arme. Sans pont, « Record » n'avait aucune matiere et
+// rendait « (rien enregistre) » sans dire pourquoi.
+//
+// On ne peut pas ajouter un SECOND lecteur sur la fifo : deux lecteurs sur un
+// tube se PARTAGENT les octets, chacun n'en verrait qu'une partie et le spectre
+// se mettrait a trouer. On ecrit donc depuis le lecteur qui draine deja, au
+// moment ou il draine : un seul flux, deux destinations.
+var iqRec = {};   // src -> { path, fd, bytes, since }
+function iqRecTarget(src) {
+  return src === 'ms' ? (process.env.PONT_AIRREC_UL_PATH || '/root/record_ul.cfile')
+                      : (process.env.PONT_AIRREC_DL_PATH || '/root/record.cfile');
+}
+function iqRecStart(src, dest) {
+  if (iqRec[src]) return iqRecStat(src);
+  var p = dest || iqRecTarget(src);
+  // 'a' et non 'w' : /root/record.cfile est le fichier dans lequel rec.js pose
+  // ses offsets. Le tronquer sous ses pieds invaliderait toute tranche en cours.
+  var fd = fs.openSync(p, 'a');
+  iqRec[src] = { path: p, fd: fd, bytes: 0, since: Date.now() };
+  log('iq-record start : ' + src + ' -> ' + p);
+  return iqRecStat(src);
+}
+function iqRecStop(src) {
+  var r = iqRec[src];
+  if (!r) return iqRecStat(src);
+  try { fs.closeSync(r.fd); } catch (e) {}
+  delete iqRec[src];
+  log('iq-record stop : ' + src + ' — ' + r.bytes + ' octets dans ' + r.path);
+  return { src: src, running: false, path: r.path, bytes: r.bytes };
+}
+function iqRecStat(src) {
+  var r = iqRec[src];
+  if (!r) {
+    var p = iqRecTarget(src), sz = 0;
+    try { sz = fs.statSync(p).size; } catch (e) {}
+    return { src: src, running: false, path: p, bytes: 0, fileBytes: sz };
+  }
+  var secs = (Date.now() - r.since) / 1000;
+  return { src: src, running: true, path: r.path, bytes: r.bytes,
+           // 8 octets par echantillon complexe (complex64), Fs = FFT_RATE
+           seconds: Math.round(secs), samples: Math.floor(r.bytes / 8) };
+}
+
+// Au-dela de ce silence, le flux est declare mort plutot que redessine.
+const FFT_STALE_MS = parseInt(process.env.FFT_STALE_MS || '3000', 10);
+
 function fftReadLive(src, p) {                                      // FIFO live, jamais d'EOF (O_RDWR), borné à MAXB
   var st = fftState[src];
+  // ── LA SOURCE PEUT CHANGER EN COURS DE ROUTE ────────────────────────────
+  // fftPath choisit parmi plusieurs candidats : au demarrage du service, la
+  // fifo du pont n'existe pas encore et on retombe sur un autre chemin. Le fd
+  // etait mis en cache UNE fois, sans memoire du fichier ouvert : quand le pont
+  // demarrait ensuite et creait sa fifo, on continuait de lire l'ancienne pour
+  // toujours. On rouvre donc des que le chemin resolu change.
+  if (st && st.path !== p) {
+    try { fs.closeSync(st.fd); } catch (e) {}
+    st = null; delete fftState[src];
+  }
   if (!st) {
     if (!fs.existsSync(p)) { try { execFileSync('mkfifo', ['-m', '0666', p]); } catch (e) {} }
     var fd = fs.openSync(p, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
-    st = { fd: fd, buf: Buffer.alloc(0) };
+    st = { fd: fd, path: p, buf: Buffer.alloc(0), last: Date.now() };
     fftState[src] = st;
   }
   var chunk = Buffer.allocUnsafe(1 << 16);
@@ -1223,8 +1366,32 @@ function fftReadLive(src, p) {                                      // FIFO live
     catch (e) { if (e.code === 'EAGAIN') break; throw e; }
     if (nread <= 0) break;
     drained += nread;
+    // Tee vers le disque AVANT le tampon glissant : ce dernier jette les octets
+    // les plus anciens, l'enregistrement, lui, doit tout garder.
+    var _r = iqRec[src];
+    if (_r) {
+      try { fs.writeSync(_r.fd, chunk, 0, nread); _r.bytes += nread; }
+      catch (e) { log('iq-record : ecriture impossible (' + e.message + ') — arret'); iqRecStop(src); }
+    }
     st.buf = Buffer.concat([st.buf, chunk.subarray(0, nread)]);
     if (st.buf.length > FFT_MAXB) st.buf = Buffer.from(st.buf.subarray(st.buf.length - FFT_MAXB));
+  }
+  // ── UN SPECTRE FIGE EST PIRE QU'UN SPECTRE ABSENT ───────────────────────
+  // Le tampon glissant n'est vide par personne : quand le producteur s'arrete
+  // (pont tue, AIRREC coupe, capture finie), readSync rend EAGAIN a chaque
+  // appel, st.buf garde sa derniere fenetre, et la meme PSD est renvoyee
+  // indefiniment. A l'ecran, la pane a l'air vivante - courbe, cascade,
+  // libelle - et affiche en realite une image arretee. On a cherche longtemps
+  // pourquoi « le spectre ne bouge plus » en soupconnant le navigateur.
+  // On date donc la derniere arrivee d'octets, et on le DIT.
+  if (drained > 0) st.last = Date.now();
+  var mute = Date.now() - st.last;
+  if (mute > FFT_STALE_MS) {
+    st.buf = Buffer.alloc(0);                                      // pas de rechute sur du vieux
+    var e = new Error('flux muet depuis ' + Math.round(mute / 1000) + ' s sur ' + p
+                    + ' — aucun producteur (pont arrete ? PONT_AIRREC=0 ?)');
+    e.fftMute = true;
+    throw e;
   }
   var n = st.buf.length & ~7;                                       // multiple de 8 octets
   if (n < FFT_NFFT * 8) return null;
@@ -1284,14 +1451,79 @@ function fftWelch(fl) {                                             // fl: Float
 // On prefere donc la FIFO DES QU'ELLE EXISTE, et on retombe sur le cfile sinon —
 // ce qui laisse shunt_legit (hors mode pont, producteur = calypso-ipc-device sur
 // /dev/shm/dsp_iq.cfile) fonctionner exactement comme avant.
+// L'ordre compte : la PREMIERE fifo qui existe gagne, et on retombe sur le
+// cfile de la table si aucune n'est la. /tmp/iq_fft_ms.fifo est celle du mode
+// pont (le cas courant) ; /dev/shm/dsp_iq.fifo reste pour shunt_legit, ou le
+// producteur est calypso-ipc-device.
 const FFT_FIFO_PREF = {
-  ms:  process.env.FIFO_MS  || '/dev/shm/dsp_iq.fifo',
-  bts: process.env.FIFO_BTS || '/tmp/iq_fft.fifo',
+  ms:  (process.env.FIFO_MS  || '/tmp/iq_fft_ms.fifo,/dev/shm/dsp_iq.fifo').split(','),
+  bts: (process.env.FIFO_BTS || '/tmp/iq_fft.fifo').split(','),
 };
 function fftPath(src, s) {
-  const f = FFT_FIFO_PREF[src];
-  if (f) { try { if (fs.statSync(f).isFIFO()) return f; } catch (e) {} }
+  const cands = FFT_FIFO_PREF[src] || [];
+  for (const f of cands) {
+    if (!f) continue;
+    try { if (fs.statSync(f).isFIFO()) return f; } catch (e) {}
+  }
+  // Aucune fifo presente : si le chemin de la table EST une fifo attendue,
+  // fftReadLive la creera. Sinon on lit le cfile comme avant.
   return s.path;
+}
+
+// ═══ Moyennage TEMPOREL de la PSD ═══════════════════════════════════════════
+// Le spectre du dashboard « piquait » : plancher hache, raies qui apparaissent
+// et disparaissent d'une image a l'autre, cascade en rayures verticales - alors
+// que la meme source, vue dans la pane tmux, donne une courbe lisse.
+//
+// Ce n'est pas la donnee qui differe, c'est l'ESTIMATEUR. Un periodogramme de
+// Welch sur N segments a une variance qui ne descend qu'en 1/N : a 16 segments
+// il reste ~25 % d'ecart-type sur chaque point, ce qui se voit exactement comme
+// ca. Les afficheurs de spectre lissent donc AUSSI dans le temps - c'est ce que
+// fait grgsm_fft_live, et c'est pour ca que sa courbe est propre.
+//
+// Moyenne exponentielle en dB (donc geometrique en puissance : c'est la bonne
+// echelle, celle ou l'oeil lit le spectre). FFT_AVG = poids de l'ANCIEN :
+//   0     aucun lissage, le comportement d'avant
+//   0.8   ~5 images de memoire, le defaut : lisse sans trainer sur les bursts
+//   0.95  tres lisse, mais un burst met une demi-seconde a s'effacer
+// ── LE LISSAGE EST UNE CONSTANTE DE TEMPS, PAS UN NOMBRE D'IMAGES ───────────
+// Un poids fixe par image lie la douceur a la cadence : en accelerant le
+// rafraichissement de 150 a 60 ms, le meme 0,8 divisait la memoire par 2,5 et
+// le spectre redevenait agite - on aurait « perdu » le lissage en gagnant de la
+// fluidite, sans rien changer d'autre. On raisonne donc en SECONDES :
+//     a = exp(-dt / TAU)
+// dt etant l'intervalle REELLEMENT mesure entre deux requetes. La courbe garde
+// la meme douceur que le navigateur poll a 7 ou a 20 images par seconde, et
+// elle la garde aussi quand le serveur ralentit sous la charge.
+var FFT_AVG_TAU = Math.max(0, parseFloat(process.env.FFT_AVG_TAU_MS || '400'));
+var psdAvg = {};                                                    // src -> Float64Array
+var psdLast = {};                                                   // src -> horodatage
+function psdSmooth(src, psd) {
+  if (!FFT_AVG_TAU) return psd;
+  var now = Date.now();
+  var dt = psdLast[src] ? (now - psdLast[src]) : FFT_AVG_TAU;
+  psdLast[src] = now;
+  // Une pause (onglet en arriere-plan, page rechargee) ne doit pas trainer :
+  // au-dela de 5 TAU la memoire ne vaut plus rien, on repart de la mesure.
+  if (dt > 5 * FFT_AVG_TAU) { delete psdAvg[src]; }
+  var FFT_AVG = Math.exp(-dt / FFT_AVG_TAU);
+  var prev = psdAvg[src];
+  if (!prev || prev.length !== psd.length) {
+    // Premiere image, ou la resolution vient de changer (/fftcfg) : on part de
+    // la mesure plutot que d'un zero, sinon le spectre monte lentement depuis
+    // le bas pendant une seconde a chaque changement de reglage.
+    psdAvg[src] = Float64Array.from(psd);
+    return psd;
+  }
+  var a = FFT_AVG, out = new Array(psd.length);
+  for (var i = 0; i < psd.length; i++) {
+    var v = prev[i] * a + psd[i] * (1 - a);
+    // NaN/-Infinity (segment tout a zero) empoisonnerait la moyenne pour
+    // toujours : un accumulateur ne se nettoie jamais tout seul.
+    if (!isFinite(v)) v = psd[i];
+    prev[i] = v; out[i] = v;
+  }
+  return out;
 }
 
 function psdJson(src) {
@@ -1302,17 +1534,22 @@ function psdJson(src) {
     var fl = fftIsFifo(p) ? fftReadLive(src, p) : fftReadTail(p);
     var r = fl ? fftWelch(fl) : null;
     if (!r) return { error: "flux pas encore prêt (pas assez d'échantillons)", label: s.label };
+    r.psd = psdSmooth(src, r.psd);
     return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd,
              palette: FFT_PALETTE, dr: FFT_DR, wfdir: FFT_WF_DIR, zoom: FFT_ZOOM,
              flip: FFT_FLIP, gain: FFT_GAIN, ofs: FFT_OFS };
   } catch (e) {
+    // Le flux s'est tu : on oublie la moyenne, sinon la reprise repartirait
+    // d'un spectre vieux de plusieurs minutes et mettrait des secondes a le
+    // chasser.
+    if (e && e.fftMute) { delete psdAvg[src]; return { error: e.message, label: s.label }; }
     if (e && e.code === 'ENOENT') return { error: 'source absente (' + s.path + ') — lance la stack', label: s.label };
     return { error: String((e && e.message) || e), label: s.label };
   }
 }
 
 function logTail(which) {                                           // queue brute du log (ANSI conservé)
-  var p = FFT_LOG[which];
+  var p = logPath(which);
   if (!p) return { error: 'log inconnu' };
   try {
     var sz = fs.statSync(p).size;
@@ -1321,7 +1558,12 @@ function logTail(which) {                                           // queue bru
     var buf = Buffer.alloc(n);
     var fd = fs.openSync(p, 'r');
     try { fs.readSync(fd, buf, 0, n, sz > n ? sz - n : 0); } finally { fs.closeSync(fd); }
-    return { text: buf.toString('utf8'), path: p };
+    // Le chemin part avec le texte : l'IHM peut dire « je lis osmo-bts-trx.log,
+    // pas grgsm_clair.raw ». Un repli silencieux ferait prendre le journal de
+    // la BTS pour le flux decode.
+    var want = (FFT_LOG[which] || [])[0];
+    return { text: buf.toString('utf8'), path: p,
+             fallback: (want && want.trim() !== p) ? want.trim() : undefined };
   } catch (e) {
     if (e && e.code === 'ENOENT') return { error: 'log absent (' + p + ')', path: p };
     return { error: String((e && e.message) || e), path: p };
@@ -1338,6 +1580,22 @@ const httpServer = http.createServer(function(req, res) {
     var body = Buffer.from(JSON.stringify(psdJson(m ? m[1] : 'ms')));
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': body.length });
     return res.end(body);
+  }
+  if (req.url.split('?')[0] === '/iqrec') {   // enregistrement continu du flux I/Q vers un cfile
+    // ?src=ms|bts  &on=1|0   (sans "on" : etat seul)
+    var qs  = req.url.split('?')[1] || '';
+    var qm  = /(?:^|&)src=(ms|bts)/.exec(qs);
+    var qon = /(?:^|&)on=([01])/.exec(qs);
+    var qsrc = qm ? qm[1] : 'bts';
+    var out;
+    try {
+      if (!qon)              out = iqRecStat(qsrc);
+      else if (qon[1] === '1') out = iqRecStart(qsrc);
+      else                     out = iqRecStop(qsrc);
+    } catch (e) { out = { src: qsrc, running: false, error: String(e && e.message || e) }; }
+    var ib = Buffer.from(JSON.stringify(out));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': ib.length });
+    return res.end(ib);
   }
   if (req.url.split('?')[0] === '/logtail') { // queue des logs mobile (MS) / grgsm record (BTS)
     var lm = /[?&]which=(ms|bts_clair|bts_ciph|bts)/.exec(req.url);

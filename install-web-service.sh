@@ -3,7 +3,7 @@
 # systemd DANS le container (osmo-operator-*), sans rebuild d'image.
 #
 # Idempotent. À lancer en root dans le container :
-#   bash /opt/osmo-egprs-web/install-web-service.sh
+#   bash /opt/GSM/osmo-egprs-web/install-web-service.sh
 #
 # Le START reste géré par start-direct.sh (`systemctl restart osmo-egprs-web`) ;
 # ce script ne fait qu'INSTALLER (runtime node + unit + enable) et démarre une
@@ -11,7 +11,7 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="${APP_DIR:-/opt/osmo-egprs-web}"
+APP_DIR="${APP_DIR:-/opt/GSM/osmo-egprs-web}"
 NODE_VERSION="${NODE_VERSION:-v20.20.2}"
 UNIT_SRC="${HERE}/osmo-egprs-web.service"
 UNIT_DST="/etc/systemd/system/osmo-egprs-web.service"

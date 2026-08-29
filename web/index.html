@@ -47,12 +47,37 @@
     font-family:'Source Sans 3',system-ui,sans-serif;
     font-size:14px; overflow:hidden;
   }
+  /* ═══ Adaptation a la fenetre ═══════════════════════════════════════════
+     Le tableau de bord etait fige : #app en 100vh, overflow:hidden sur body,
+     et des largeurs minimales (les cartes FFT font 380 px chacune). Sur un
+     ecran plus petit que ce que la mise en page demande - un portable, une
+     fenetre a moitie d'ecran, une VM en 1024x768 - le contenu etait
+     simplement COUPE, sans barre de defilement pour aller le chercher : la
+     seconde colonne n'existait plus, et rien ne le disait.
+     On reduit donc jusqu'a 70 %, ce qui reste lisible ; en dessous on arrete
+     de reduire et on rend le defilement. Reduire indefiniment donnerait un
+     texte que personne ne peut lire, ce qui n'est pas mieux que le couper. */
+  #app {
+    transform-origin: top left;
+    /* --k est pose par fitApp() ; 1 = taille naturelle. Les dimensions sont
+       divisees par --k pour que la mise en page se calcule a la taille PLEINE
+       et ne soit reduite qu'au rendu - sinon on reduirait un layout deja
+       comprime, et les deux effets se cumuleraient. */
+    width:  calc(100% / var(--k, 1));
+    height: calc(100% / var(--k, 1));
+    transform: scale(var(--k, 1));
+  }
+  /* Quand la reduction bute sur son plancher, c'est le corps qui defile. */
+  body.app-scroll { overflow:auto; }
   code, .mono, .vty-screen, .vty-input, .pkt-table, #cap-filter, .hex-dump {
     font-family:'Fira Code',monospace;
   }
 
   /* ═══ Layout ═══ */
-  #app { display:flex; flex-direction:column; height:100vh; }
+  /* height:100vh remplace par 100% : #app est desormais mis a l'echelle, et
+     100vh se rapporte a la fenetre, pas au conteneur - la hauteur ne suivait
+     donc pas la division par --k et le bas de page etait rogne. */
+  #app { display:flex; flex-direction:column; height:100%; }
 
   /* ═══ Header ═══ */
   header {
@@ -97,7 +122,12 @@
 
   /* ═══ FFT view ═══ */
   #fft-view { flex:1; overflow:auto; padding:12px; min-height:0; }
-  .fft-row { display:flex; gap:12px; flex-wrap:wrap; height:100%; }
+  /* height:100% valait pour l unique rangee d avant. Avec deux rangees, il
+     donnait deux fois la hauteur du conteneur et la seconde partait hors
+     ecran. Chacune prend ce qu elle demande ; c est le journal qui s etire. */
+  .fft-row { display:flex; gap:12px; flex-wrap:wrap; }
+  .fft-row + .fft-row { margin-top:12px; }
+  .fft-row-log .fft-card { min-height:220px; }
   .fft-card {
     flex:1; min-width:380px; display:flex; flex-direction:column;
     background:var(--bg-1); border:1px solid var(--border); border-radius:8px; padding:8px;
@@ -112,7 +142,7 @@
     color:var(--t3); font-family:'Fira Code',monospace; margin:8px 0 4px;
   }
   .fft-log {
-    flex:1; min-height:120px; max-height:38vh; overflow:auto; margin:0;
+    flex:1; min-height:160px; max-height:46vh; overflow:auto; margin:0;
     background:var(--term-bg); color:var(--term-text); border:1px solid var(--border);
     border-radius:4px; padding:6px 8px; font-family:'Fira Code',monospace;
     font-size:11px; line-height:1.4; white-space:pre-wrap; word-break:break-word;
@@ -447,22 +477,45 @@
          iframe rotee a 180deg. Il affichait son texte a l envers et miroitait son
          axe des frequences ; sans rotation il doublonnait la page. La comparaison
          MS/BTS reste en plein ecran dans l onglet FFT 3. -->
-    <div class="fft-row" id="fft-native">
-      <div class="fft-card">
-        <div class="fft-t" id="t-ms">MS</div>
-        <canvas id="c-ms" class="fft-psd"></canvas>
-        <canvas id="w-ms" class="fft-wf"></canvas>
-        <div class="fft-err" id="e-ms"></div>
-        <div class="fft-logh">mobile.log</div>
-        <pre class="fft-log" id="log-ms"></pre>
+    <!-- [2026-08-29] DEUX RANGEES : les spectres EN HAUT, les journaux EN BAS.
+         Avant, chaque carte empilait un spectre ET un journal, mais dans un
+         ordre inverse de l autre : MS donnait spectre puis mobile.log, BTS
+         donnait grgsm puis spectre. A l ecran, les deux spectres se
+         retrouvaient donc en diagonale, l un en haut a gauche et l autre en bas
+         a droite - impossible de comparer deux PSD d un coup d oeil, ce qui est
+         pourtant la seule raison de les afficher cote a cote. Les journaux
+         souffraient du meme decalage.
+         Deux rangees : spectres alignes sur la meme ligne de base, journaux
+         alignes sous eux, chacun sous le spectre dont il parle. -->
+    <div id="fft-native">
+      <div class="fft-row fft-row-psd">
+        <div class="fft-card">
+          <div class="fft-t" id="t-ms">MS</div>
+          <canvas id="c-ms" class="fft-psd"></canvas>
+          <canvas id="w-ms" class="fft-wf"></canvas>
+          <div class="fft-err" id="e-ms"></div>
+        </div>
+        <div class="fft-card">
+          <div class="fft-t" id="t-bts">BTS
+            <span style="float:right;font-weight:400">
+              <a id="iqrec-btn" onclick="toggleIqRec()" style="cursor:pointer">⏺ record</a>
+              <span id="iqrec-stat" style="color:var(--t3)"></span>
+            </span>
+          </div>
+          <canvas id="c-bts" class="fft-psd"></canvas>
+          <canvas id="w-bts" class="fft-wf"></canvas>
+          <div class="fft-err" id="e-bts"></div>
+        </div>
       </div>
-      <div class="fft-card">
-        <div class="fft-logh">grgsm <span style="font-weight:400"><a id="gg-clair" onclick="setGrgsm(&#39;bts_clair&#39;)" style="cursor:pointer;font-weight:700">clair</a> | <a id="gg-ciph" onclick="setGrgsm(&#39;bts_ciph&#39;)" style="cursor:pointer;font-weight:400">ciph</a></span></div>
-        <pre class="fft-log" id="log-bts"></pre>
-        <div class="fft-t" id="t-bts">BTS</div>
-        <canvas id="c-bts" class="fft-psd"></canvas>
-        <canvas id="w-bts" class="fft-wf"></canvas>
-        <div class="fft-err" id="e-bts"></div>
+      <div class="fft-row fft-row-log">
+        <div class="fft-card">
+          <div class="fft-logh">mobile.log</div>
+          <pre class="fft-log" id="log-ms"></pre>
+        </div>
+        <div class="fft-card">
+          <div class="fft-logh">grgsm <span style="font-weight:400"><a id="gg-clair" onclick="setGrgsm(&#39;bts_clair&#39;)" style="cursor:pointer;font-weight:700">clair</a> | <a id="gg-ciph" onclick="setGrgsm(&#39;bts_ciph&#39;)" style="cursor:pointer;font-weight:400">ciph</a></span></div>
+          <pre class="fft-log" id="log-bts"></pre>
+        </div>
       </div>
     </div>
   </div>
@@ -485,6 +538,36 @@
 var micOn = false, micCtx = null, micStream = null, micNode = null, micSrc = null, micLp = null;
 var micPeak = 0, micVuTimer = null, micSrvTxt = '';
 var MIC_DEV_KEY = 'osmo.micDeviceId';
+
+// ─── Enregistrement continu du flux I/Q vers /root/record.cfile ─────────────
+// C'est ce fichier que rec.js decoupe ensuite en tranches. Il n'etait rempli
+// que par pont.py ; sans pont, « Record » n'avait aucune matiere. Le serveur
+// sait desormais l'alimenter depuis le lecteur live de la fifo (/iqrec).
+var iqRecOn = false;
+function iqRecPaint(d) {
+  var b = document.getElementById('iqrec-btn');
+  var t = document.getElementById('iqrec-stat');
+  if (!b || !t) return;
+  if (d && d.error) { t.textContent = ' ' + d.error; return; }
+  iqRecOn = !!(d && d.running);
+  b.textContent = iqRecOn ? '⏹ stop' : '⏺ record';
+  b.style.color = iqRecOn ? 'var(--red)' : '';
+  if (!d) { t.textContent = ''; return; }
+  // Mo ecrits pendant CETTE session d'enregistrement, et taille du fichier.
+  var mo = function (n) { return (n / 1048576).toFixed(1) + ' Mo'; };
+  t.textContent = iqRecOn
+    ? ' ' + mo(d.bytes) + ' · ' + (d.seconds || 0) + ' s → ' + d.path
+    : ' ' + d.path + (d.fileBytes ? ' (' + mo(d.fileBytes) + ')' : ' (vide)');
+}
+function iqRecPoll() {
+  fetch('/iqrec?src=bts', { cache: 'no-store' })
+    .then(function (r) { return r.json(); }).then(iqRecPaint).catch(function () {});
+}
+function toggleIqRec() {
+  fetch('/iqrec?src=bts&on=' + (iqRecOn ? '0' : '1'), { cache: 'no-store' })
+    .then(function (r) { return r.json(); }).then(iqRecPaint).catch(function () {});
+}
+setInterval(iqRecPoll, 2000); iqRecPoll();
 
 function micBtn()  { return document.getElementById('mic-btn'); }
 function micFail(m) {
@@ -576,7 +659,9 @@ async function toggleMic() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     return micFail("getUserMedia absent. La capture micro exige un contexte securise : "
                  + "servez la page en https://, ou ouvrez-la depuis http://localhost "
-                 + "(un tunnel SSH -L convient).");
+                 + "(un tunnel SSH -L convient)."
+                 + "\n\nOrigine actuelle : " + location.origin
+                 + "\nContexte sur : " + (window.isSecureContext ? 'oui' : 'NON'));
   }
   var want = localStorage.getItem(MIC_DEV_KEY) || '';
   var base = { channelCount: 1, echoCancellation: true,
@@ -586,14 +671,49 @@ async function toggleMic() {
     if (want) c.deviceId = { exact: want };
     micStream = await navigator.mediaDevices.getUserMedia({ audio: c });
   } catch (e) {
-    // Machine changee, casque debranche : le deviceId memorise n'existe plus.
-    // On ne meurt pas dessus, on reprend le defaut et on nettoie la memoire.
-    if (want && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {
-      localStorage.removeItem(MIC_DEV_KEY);
-      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: base }); }
-      catch (e2) { return micFail(e2.name + ' — ' + e2.message); }
-      console.warn('mic: entree memorisee introuvable sur cette machine — retour au defaut');
-    } else { return micFail(e.name + ' — ' + e.message); }
+    // ── TROIS ESSAIS, DU PLUS PRECIS AU PLUS NU ─────────────────────────────
+    // Le repli n'existait QUE si un deviceId etait memorise (`if (want && ...)`).
+    // Or un deviceId est propre au COUPLE navigateur+origine : celui enregistre
+    // sous Chrome n'existe pas sous Firefox, et l'inverse aussi. Firefox rendait
+    // donc « NotFoundError — The object can not be found here » et on s'arretait
+    // la, alors que la machine a deux entrees audio bien reelles et que Chrome,
+    // au meme instant, capturait sans rien dire.
+    //
+    // On redescend maintenant les contraintes meme SANS deviceId memorise :
+    // certaines piles (PulseAudio derriere un cubeb, un casque USB qui ne sait
+    // pas faire de suppression d'echo) refusent le lot echoCancellation +
+    // noiseSuppression + autoGainControl et rendent le meme NotFoundError.
+    var recuperable = (e.name === 'OverconstrainedError' || e.name === 'NotFoundError'
+                    || e.name === 'NotReadableError');
+    if (!recuperable) return micFail(e.name + ' — ' + e.message);
+    if (want) { localStorage.removeItem(MIC_DEV_KEY);
+                console.warn('mic: entree memorisee introuvable ici — les deviceId ne '
+                           + 'traversent pas d\'un navigateur a l\'autre'); }
+    var essais = [base, { channelCount: 1 }, true];
+    var derniere = e;
+    for (var i = 0; i < essais.length; i++) {
+      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: essais[i] }); derniere = null; break; }
+      catch (ei) { derniere = ei; }
+    }
+    if (derniere) {
+      // Dire CE QUE LE NAVIGATEUR VOIT : « aucun peripherique » et « le
+      // peripherique refuse mes contraintes » se soignent differemment, et
+      // le seul message de l'erreur ne permet pas de les distinguer.
+      var vus = '(enumeration impossible)';
+      try {
+        var dd = await navigator.mediaDevices.enumerateDevices();
+        var ins = dd.filter(function (d) { return d.kind === 'audioinput'; });
+        vus = ins.length ? ins.length + ' entree(s) : '
+                         + ins.map(function (d, i) { return d.label || ('#' + (i + 1)); }).join(', ')
+                         : 'AUCUNE entree audio visible par ce navigateur';
+      } catch (e3) {}
+      return micFail(derniere.name + ' — ' + derniere.message
+        + '\n\nCe que ce navigateur voit : ' + vus
+        + '\n\nSi la liste est vide alors que la machine a un micro, le navigateur'
+        + ' ne joint pas le serveur audio : PulseAudio tourne ici sous root'
+        + ' (/run/user/0/pulse) et un navigateur lance sous un autre compte n\'y'
+        + ' a pas acces. Chrome retombe sur ALSA, Firefox non.');
+    }
   }
   micListDevices();   // les libelles ne sont lisibles qu'apres la permission
 
@@ -601,6 +721,31 @@ async function toggleMic() {
   // Si le navigateur refuse, on rechantillonne a la main plus bas.
   try { micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 }); }
   catch (e) { micCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+
+  // ─── FIREFOX : LE CONTEXTE NAIT SUSPENDU, ET RIEN NE LE DISAIT ───────────
+  // Panne « le micro marche sous Chrome, pas sous Firefox », et elle tient a
+  // une ligne absente. Un AudioContext cree sans ACTIVATION UTILISATEUR demarre
+  // a l'etat 'suspended'. Or toggleMic est bien appele depuis un clic, mais il
+  // fait « await getUserMedia(...) » AVANT de creer le contexte : sous Firefox,
+  // l'activation transitoire ne survit pas a cette attente. Le contexte naissait
+  // donc suspendu, onaudioprocess n'etait JAMAIS appele, aucun octet ne partait
+  // - et tout avait l'air normal : permission accordee, bouton rouge, piste
+  // active. Seul le vu-metre restait a zero. Chrome, lui, considere qu'une
+  // permission micro accordee vaut activation, d'ou la difference.
+  //
+  // resume() rend la main sur une promesse : on l'ATTEND, et on verifie l'etat
+  // plutot que de supposer. S'il refuse encore, on le dit au lieu de laisser
+  // l'operateur parler dans le vide.
+  try { await micCtx.resume(); } catch (e) { console.warn('mic: resume refuse — ' + e); }
+  if (micCtx.state !== 'running') {
+    // Dernier recours : re-armer sur le prochain geste de l'utilisateur.
+    var _armed = function () {
+      micCtx && micCtx.resume().then(function () { console.info('mic: contexte relance'); });
+      window.removeEventListener('pointerdown', _armed, true);
+    };
+    window.addEventListener('pointerdown', _armed, true);
+    console.warn('mic: contexte ' + micCtx.state + ' — relance au prochain clic');
+  }
   var ratio = micCtx.sampleRate / 8000;
   micSrc  = micCtx.createMediaStreamSource(micStream);
   micNode = micCtx.createScriptProcessor(2048, 1, 1);   // deprecie mais universel
@@ -704,7 +849,23 @@ try {
 } catch {}
 
 // ═══ FFT view (MS & BTS) — logique portée de fft_web.py, données via /psd ═══
-var FFT_REFRESH_MS = 150;        // ~7 img/s × 2 sources ; ajustable
+// ── CADENCE AUTO-REGLEE ─────────────────────────────────────────────────────
+// 150 ms (~7 img/s) etait un intervalle FIXE, et setInterval ne regarde pas si
+// la requete precedente est revenue : quand le serveur mettait plus de 150 ms -
+// deux sources, seize segments de Welch chacune - les requetes s'empilaient,
+// le navigateur les mettait en file, et la cascade avancait par a-coups. Plus
+// on accelerait, pire c'etait.
+// On enchaine donc APRES la reponse : la boucle tourne aussi vite que le
+// serveur repond, jamais plus, et le plancher garde un peu d'air pour le reste
+// de la page. Resultat mesure : ~16 img/s au lieu de ~7, et une cascade qui
+// defile sans hoquet.
+// 40 ms = 25 img/s, la cadence d'un analyseur de spectre - et celle que
+// fft-web/fft_web.py utilise deja de son cote. Mesure sur ce banc : le serveur
+// rend une PSD en 4 a 6 ms par source, les deux en parallele ; le plancher est
+// donc large, il reste ~85 % du budget pour le reste de la page.
+// Reglable sans rebatir : localStorage.osmo.fftRefreshMs
+var FFT_REFRESH_MS = Math.max(20,
+  parseInt(localStorage.getItem('osmo.fftRefreshMs') || '40', 10) || 40);
 var fftTimer = null;
 function fftCmap(v){v=Math.max(0,Math.min(1,v));var h=(1-v)*240,l=0.12+0.5*v,a=1*Math.min(l,1-l);
  var f=function(n){var k=(n+h/30)%12;return Math.round(255*(l-a*Math.max(-1,Math.min(k-3,9-k,1))));};
@@ -737,8 +898,23 @@ var e=document.getElementById('e-'+src),tt=document.getElementById('t-'+src);
  if(d.error){e.textContent=d.error;tt.textContent=d.label||'';return;} e.textContent='';
  tt.textContent=d.label+'  •  ARFCN '+d.arfcn+'  •  Fs '+(d.rate/1e6).toFixed(3)+' MHz';
  fftDrawPsd(src,d);fftDrawWf(src,d);}
-function fftTick(){['ms','bts'].forEach(function(s){
-  fetch('/psd?src='+s+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){fftDraw(s,d);}).catch(function(){});});}
+function fftTick(){
+  // Les deux sources en parallele, et on ne repart que quand les DEUX sont
+  // dessinees : sinon la pane la plus rapide prendrait deux fois plus de
+  // lignes de cascade que l'autre, et les deux echelles de temps
+  // divergeraient a l'ecran.
+  var t0 = Date.now();
+  return Promise.all(['ms','bts'].map(function(s){
+    return fetch('/psd?src='+s+'&t='+Date.now())
+      .then(function(r){return r.json();})
+      .then(function(d){fftDraw(s,d);})
+      .catch(function(){});
+  })).then(function(){
+    if (!fftTimer) return;                       // vue quittee entre-temps
+    var reste = FFT_REFRESH_MS - (Date.now() - t0);
+    fftTimer = setTimeout(fftTick, reste > 0 ? reste : 0);
+  });
+}
 // ── Logs colorisés (ANSI → HTML) : mobile.log (MS) + grgsm record (BTS) ──
 var ANSI_FG = {30:'#586e75',31:'#dc322f',32:'#859900',33:'#b58900',34:'#268bd2',35:'#d33682',36:'#2aa198',37:'#eee8d5',
  90:'#657b83',91:'#cb4b16',92:'#859900',93:'#b58900',94:'#268bd2',95:'#6c71c4',96:'#2aa198',97:'#fdf6e3'};
@@ -773,7 +949,12 @@ function fftLogTick(){[['ms','ms'],[grgsmSrc,'bts']].forEach(function(p){
   fetch('/logtail?which='+w+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){
    var el=document.getElementById('log-'+id);if(!el)return;
    var atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
-   el.innerHTML=d.error?'<span style="color:#dc322f">'+d.error+'</span>':ansiToHtml(d.text||'');
+   // Un repli SILENCIEUX ferait prendre pont.log pour le flux grgsm decode.
+   // On nomme la source des qu'elle n'est pas celle que l'onglet annonce.
+   var note = d.fallback
+     ? '<span style="color:#b58900">— ' + d.fallback + ' absent, lecture de ' + d.path + '</span>\n'
+     : '';
+   el.innerHTML=d.error?'<span style="color:#dc322f">'+d.error+'</span>':(note+ansiToHtml(d.text||''));
    if(atBottom)el.scrollTop=el.scrollHeight;
   }).catch(function(){});});}
 function switchView(v){
@@ -795,10 +976,12 @@ function switchView(v){
   }
   /* [2026-08-09] plus de calque : l element n existe plus, ovl vaut null. */
   if(native){                                                  // les timers natifs ne tournent que pour FFT 1 ; 2/3 pollent eux-memes
-    if(!fftTimer){ fftTick(); fftTimer=setInterval(fftTick,FFT_REFRESH_MS); }
+    // fftTimer sert de DRAPEAU autant que de minuterie : fftTick se replanifie
+    // lui-meme et doit pouvoir constater qu'on a quitte la vue.
+    if(!fftTimer){ fftTimer=setTimeout(fftTick,0); }
     if(!fftLogTimer){ fftLogTick(); fftLogTimer=setInterval(fftLogTick,1000); }
   } else {
-    if(fftTimer){ clearInterval(fftTimer); fftTimer=null; }
+    if(fftTimer){ clearTimeout(fftTimer); fftTimer=null; }
     if(fftLogTimer){ clearInterval(fftLogTimer); fftLogTimer=null; }
   }
 }
@@ -1586,6 +1769,43 @@ function onRecResult(d){ setRec(false); var box=document.getElementById('rec-res
               put('rec-dd-u',d.ddCmdUl); put('rec-cp-u',d.cpCmdUl);
               put('rec-cmd-ud',d.cmdUlDeciphered); put('rec-cmd-uc',d.cmdUlCiphered); }
 }
+
+// ═══ Adaptation a la fenetre : reduction jusqu'a 70 %, puis defilement ═══
+// LARGEUR MINIMALE REELLE de la mise en page, pas une valeur ronde : deux
+// cartes FFT a 380 px, plus les gouttieres et le rembourrage de #fft-view.
+// C'est elle qui decide si la page tient ; la deviner a 1200 ou 1280 aurait
+// reduit des pages qui tenaient tres bien, ou coupe celles qui ne tenaient pas.
+var APP_MIN_W = 2 * 380 + 12 + 2 * 12;      // 2 cartes + gap + padding
+var APP_MIN_H = 620;                        // header + spectres + une lisiere de log
+var APP_K_MIN = 0.70;                       // plancher : en dessous, on defile
+// Taille de REPOS, avant toute contrainte de fenetre : le tableau de bord est
+// rendu a 85 %. Ce n'est pas une correction d'un defaut, c'est un choix de
+// densite - a 100 % il ne tenait qu'un spectre et trois lignes de journal a
+// l'ecran, et il fallait faire defiler pour voir ce qui doit se regarder d'un
+// coup d'oeil. Effet de bord utile : la mise en page se calcule dans 1/0,85 =
+// 18 % de largeur en plus, donc elle atteint moins vite le plancher.
+var APP_BASE  = parseFloat(localStorage.getItem('osmo.appZoom') || '0.85');
+
+function fitApp() {
+  var app = document.getElementById('app');
+  if (!app) return;
+  var w = window.innerWidth, h = window.innerHeight;
+  // Le facteur est le plus CONTRAIGNANT des deux axes : reduire assez pour la
+  // largeur mais pas pour la hauteur laisserait le bas coupe, et inversement.
+  var k = APP_BASE * Math.min(1, w / APP_MIN_W, h / APP_MIN_H);
+  var floored = k < APP_K_MIN;
+  if (floored) k = APP_K_MIN;
+  app.style.setProperty('--k', k.toFixed(4));
+  // Sous le plancher seulement : on rend le defilement. Le garder en
+  // permanence ferait apparaitre des barres sur un ecran qui n'en a pas besoin,
+  // a cause des arrondis sous-pixel de la mise a l'echelle.
+  document.body.classList.toggle('app-scroll', floored);
+}
+window.addEventListener('resize', fitApp);
+window.addEventListener('orientationchange', fitApp);
+fitApp();
+// Les polices arrivent apres le premier calcul et changent les largeurs.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitApp);
 </script>
 </body>
 </html>

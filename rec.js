@@ -129,8 +129,15 @@ module.exports = function (deps) {
     if (!pontPid()) { fail(ws, 'pont.py absent : rien n\'enregistre. Lance la pile en CALYPSO_BRIDGE=pont.'); return; }
     const dlFile = fichierCourant(DL_FILE);
     if (!dlFile) {
-      fail(ws, DL_FILE + ' absent : AIRREC est coupé (PONT_AIRREC=0), le pont tourne sur '
-             + 'du code antérieur, ou le disque est plein — voir /dev/shm/pont.log');
+      // Le message nommait trois causes sans dire quoi FAIRE, alors qu'il y a
+      // desormais un remede a un clic : le bouton « ⏺ record » du spectre BTS
+      // ecrit ce meme fichier depuis le lecteur live de la fifo (/iqrec), sans
+      // qu'il faille relancer le pont.
+      fail(ws, DL_FILE + ' absent. Trois causes possibles : AIRREC coupé '
+             + '(PONT_AIRREC=0 — le défaut est repassé à 1 le 2026-08-29), le pont '
+             + 'tourne sur du code antérieur, ou le disque est plein — voir '
+             + '/dev/shm/pont.log.\nSans relancer le pont : « ⏺ record » sous le '
+             + 'spectre BTS alimente ' + DL_FILE + ' depuis la fifo live.');
       return;
     }
     const ulFile = fichierCourant(UL_FILE);
