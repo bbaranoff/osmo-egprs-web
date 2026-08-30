@@ -16,6 +16,23 @@ NODE_VERSION="${NODE_VERSION:-v20.20.2}"
 UNIT_SRC="${HERE}/osmo-egprs-web.service"
 UNIT_DST="/etc/systemd/system/osmo-egprs-web.service"
 
+# ── DEUX INTERRUPTEURS, POUR LES CONTEXTES SANS SYSTEMD NI IDENTITE ─────────
+# WEB_NO_TLS=1   ne genere PAS le certificat. Pour build-iso.sh, qui tourne dans
+#                un chroot : une cle privee fabriquee la serait IDENTIQUE dans
+#                toutes les ISO tirees de cette image, donc sans valeur - c'est
+#                le raisonnement de la section 3 ci-dessous, applique au build.
+#                La cle est posee plus tard, sur la machine, par osmo-web-tls
+#                au premier demarrage : elle porte alors son vrai nom et ses
+#                vraies adresses.
+# WEB_NO_START=1 installe et `enable`, mais ne demarre pas et ne verifie pas
+#                que le service tourne. Dans un chroot (build ou installeur),
+#                systemd ne tourne pas : `systemctl restart` echoue toujours, et
+#                avec `set -e` il ferait echouer la construction ou
+#                l'installation entiere sur un service qui n'avait aucune raison
+#                de demarrer la.
+WEB_NO_TLS="${WEB_NO_TLS:-0}"
+WEB_NO_START="${WEB_NO_START:-0}"
+
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 
 [ "$(id -u)" -eq 0 ] || { echo -e "${RED}Root requis${NC}"; exit 1; }
@@ -67,7 +84,9 @@ TLS_DIR="/etc/osmo-web-tls"
 TLS_CERT="${TLS_DIR}/cert.pem"
 TLS_KEY="${TLS_DIR}/key.pem"
 
-if [ -f "$TLS_CERT" ] && openssl x509 -in "$TLS_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
+if [ "$WEB_NO_TLS" = "1" ]; then
+    echo -e "  ${YELLOW}[tls] ignore (WEB_NO_TLS=1) — la cle sera posee sur la machine${NC}"
+elif [ -f "$TLS_CERT" ] && openssl x509 -in "$TLS_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
     echo -e "  ${GREEN}[tls] certificat present et valable > 30 j${NC}"
 else
     if ! command -v openssl >/dev/null 2>&1; then
@@ -104,8 +123,14 @@ fi
 cp -f "$UNIT_SRC" "$UNIT_DST"
 echo -e "  ${GREEN}[unit] $UNIT_DST installé${NC}"
 
-systemctl daemon-reload
+systemctl daemon-reload 2>/dev/null || true
 systemctl enable osmo-egprs-web >/dev/null 2>&1 || true
+
+if [ "$WEB_NO_START" = "1" ]; then
+    echo -e "  ${GREEN}[ok] osmo-egprs-web installe et active au boot (pas demarre ici)${NC}"
+    exit 0
+fi
+
 systemctl restart osmo-egprs-web
 sleep 2
 
