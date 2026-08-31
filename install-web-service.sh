@@ -211,6 +211,28 @@ fi
 # ── 4. Unit systemd ──────────────────────────────────────────────────────────
 [ -f "$UNIT_SRC" ] || { echo -e "${RED}[unit] introuvable : $UNIT_SRC${NC}"; exit 1; }
 cp -f "$UNIT_SRC" "$UNIT_DST"
+
+# ── LE CHEMIN DE NODE EST RESOLU, PAS SUPPOSE ────────────────────────────────
+# [2026-08-31] Le gabarit porte ExecStart=/usr/bin/node en dur, et ce n'est vrai
+# que sur l'hôte. Dans les conteneurs osmo-operator-*, node vit en
+# /usr/local/bin/node (lien vers /opt/node/bin/node) — celui que ce script
+# installe lui-même quand il manque, plus haut. systemd sortait alors en
+#     status=203/EXEC
+# et se contentait de relancer en boucle (Restart=on-failure). 203/EXEC ne dit
+# pas « fichier introuvable » : il dit « je n'ai pas pu exécuter », ce qui
+# envoie chercher un problème de droits ou de SELinux plutôt qu'un chemin.
+# Le script SAIT déjà où est node (il l'a teste ligne 41) : on écrit ce
+# chemin-là dans l'unité, au lieu d'espérer que le gabarit soit juste.
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+[ -n "$NODE_BIN" ] || NODE_BIN="/opt/node/bin/node"      # celui qu'on vient de poser
+if [ -x "$NODE_BIN" ]; then
+    # Seulement la ligne ExecStart, et seulement le binaire : les arguments
+    # (server.js --verbose) viennent du gabarit et ne sont pas touchés.
+    sed -i -E "s|^(ExecStart=)[^ ]*/node( .*)?$|\1${NODE_BIN}\2|" "$UNIT_DST"
+    echo -e "  ${GREEN}[unit] node résolu : ${NODE_BIN}${NC}"
+else
+    echo -e "  ${YELLOW}[unit] node introuvable — ExecStart laissé tel quel, le service échouera en 203/EXEC${NC}"
+fi
 echo -e "  ${GREEN}[unit] $UNIT_DST installé${NC}"
 
 systemctl daemon-reload 2>/dev/null || true
