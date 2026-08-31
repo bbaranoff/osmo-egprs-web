@@ -171,7 +171,7 @@ module.exports = function (deps) {
       // occupee). `status=progress` ecrit sur stderr, il reste donc visible.
       // bs=8M + iflag=*_bytes : sans iflag, `skip` compterait en BLOCS de 8 Mo
       // et la tranche serait extraite tres loin de sa position.
-      dd: 'docker exec ' + CONTAINER + ' dd if=' + file
+      dd: ' dd if=' + file
         + ' bs=8M iflag=skip_bytes,count_bytes skip=' + start + ' count=' + len
         + ' status=progress > ' + path.basename(out),
       cp: '',

@@ -54,7 +54,7 @@ function shCmd(container, id, inner) {
     if (NETNS_PREFIX) return 'ip netns exec ' + NETNS_PREFIX + id + ' bash -c "' + inner + '"';
     return 'bash -c "' + inner + '"';
   }
-  return 'docker exec ' + container + ' bash -c "' + inner + '"';
+  return ' bash -c "' + inner + '"';
 }
 
 
