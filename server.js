@@ -1657,16 +1657,59 @@ function recBroadcast(obj) {
 // Dernier Kc non nul vu : le Kc est effacé à l'idle (DM_EST/DM_REL) -> à l'arrêt
 // d'un record il est souvent déjà à zéro. On garde le dernier Kc RÉEL pour que la
 // commande « deciphered » (avec clé) reste exploitable.
+//
+// [2026-08-31] ON LISAIT LE MAUVAIS FICHIER — c'est pour ça que le dashboard
+// n'affichait JAMAIS de Kc. Il y a DEUX chemins (calypso_kc.h) :
+//   /dev/shm/calypso_kc     historique et PARTAGÉ. osmocon le remet à 32 zéros
+//                           sur DM_EST_REQ, en pleine session chiffrée, dès que
+//                           le mobile ouvre un lien de plus (SAPI 3 du SMS).
+//                           C'est le seul que ce serveur lisait : il y trouvait
+//                           des zéros, lastKc restait null, et l'interface
+//                           annonçait « Kc absent » au milieu d'une session A5/1.
+//   /dev/shm/calypso_kc_l1  AUTORITAIRE : écrit par le SEUL shunt DSP
+//                           (calypso_dsp_shunt.c:2188) depuis d_a5mode et a_kc
+//                           du NDB — l'état de chiffrement RÉEL de la L1.
+//                           Personne d'autre ne connaît ce fichier.
+// pont.py:165 applique déjà cette préférence ; on l'aligne ici.
+//
+// LA RÈGLE, la même que pont.py : l'autoritaire d'abord, et une fois qu'il
+// répond on n'en redescend JAMAIS. Un algo=0 venu de LUI veut vraiment dire
+// « en clair » et se croit ; retomber sur l'historique à ce moment-là, ce
+// serait réintroduire la course qu'on vient de supprimer. L'historique ne sert
+// que si le fichier autoritaire est ABSENT (binaire QEMU pas reconstruit).
+var KC_PATH    = '/dev/shm/calypso_kc';
+var KC_L1_PATH = '/dev/shm/calypso_kc_l1';
+var kcSrc = null;                  // null = à élire, puis 'l1' ou 'legacy'
+
+// Enregistrement courant ({algo, kc}) ou null si AUCUN producteur. Injecté dans
+// rec.js pour qu'il n'existe qu'UNE règle de choix dans tout le serveur.
+function kcReadRecord() {
+  var cands = kcSrc === 'l1'     ? [[KC_L1_PATH, 'l1']]
+            : kcSrc === 'legacy' ? [[KC_PATH, 'legacy']]
+            :                      [[KC_L1_PATH, 'l1'], [KC_PATH, 'legacy']];
+  for (var i = 0; i < cands.length; i++) {
+    var b;
+    try { b = fs.readFileSync(cands[i][0]); } catch (e) { continue; }
+    if (b.length < 14) continue;   // pwrite partiel : on réessaiera au prochain tick
+    if (kcSrc !== cands[i][1]) { kcSrc = cands[i][1]; log('[kc] source : ' + cands[i][0]); }
+    return { algo: b[4], kc: b.slice(6, 14) };
+  }
+  kcSrc = null;                    // plus de producteur : ré-élection au prochain run
+  return null;
+}
+
 var lastKc = null;
 setInterval(function () {
-  try {
-    var b = fs.readFileSync('/dev/shm/calypso_kc');
-    if (b.length >= 14 && b[4] >= 1 && b[4] <= 3 && !b.slice(6, 14).every(function (x) { return x === 0; })) {
-      lastKc = { algo: b[4], spaced: Array.from(b.slice(6, 14)).map(function (x) { return x.toString(16).padStart(2, '0'); }).join(' '), tsMs: Date.now() };
-    }
-  } catch (e) {}
+  var r = kcReadRecord();
+  if (r && r.algo >= 1 && r.algo <= 3 && !r.kc.every(function (x) { return x === 0; })) {
+    lastKc = { algo: r.algo,
+               spaced: Array.from(r.kc).map(function (x) { return x.toString(16).padStart(2, '0'); }).join(' '),
+               tsMs: Date.now() };
+  }
 }, 250);
-const recorder = require('./rec.js')({ broadcast: recBroadcast, log: log, getLastKc: function () { return lastKc; } });
+const recorder = require('./rec.js')({ broadcast: recBroadcast, log: log,
+                                       getLastKc: function () { return lastKc; },
+                                       readKcRecord: kcReadRecord });
 
 // ─── État chiffrement A5 (badge dashboard) : état de SESSION, pas de trame ────
 // [2026-08-16] LE BADGE OSCILLAIT ENTRE A5/0 ET A5/1. Deux défauts, tous deux la
@@ -1725,6 +1768,7 @@ function readA5Status() {
     // précédent re-verrouillerait immédiatement le badge.
     a5Latch = { run: run, seen: false, algo: 0, mode: a5SessionMode() };
     lastKc = null;
+    kcSrc  = null;   // le teardown a effacé les deux fichiers : on ré-élit la source
     log('[a5] nouveau run (osmo-bsc pid=' + (run || '?') + ') — badge remis à ' + a5Latch.mode);
   }
   if (lastKc && lastKc.algo >= 1) { a5Latch.seen = true; a5Latch.algo = lastKc.algo; }

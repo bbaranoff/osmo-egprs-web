@@ -34,7 +34,12 @@ const SEG_UL_RE = /^air_pont_ul_\d{14}\.cfile$/;
 const SAMP      = 1083333;
 const BPS       = 8;                         // complex64 = 8 octets/échantillon
 const CONTAINER = process.env.PONT_CONTAINER || 'osmo-operator-1';
-const KC_PATH   = '/dev/shm/calypso_kc';     // [4]algo [6..13]Kc(8)
+// [4]algo [6..13]Kc(8) — format complet dans calypso_kc.h. DEUX chemins :
+// l'historique (partagé, remis à zéro par osmocon) et l'AUTORITAIRE écrit par le
+// seul shunt DSP. La règle de choix vit dans server.js (kcReadRecord) et nous est
+// injectée ; ces constantes ne servent qu'au repli, si rec.js est utilisé seul.
+const KC_PATH    = '/dev/shm/calypso_kc';
+const KC_L1_PATH = '/dev/shm/calypso_kc_l1';
 
 const MODES = ['BCCH', 'BCCH_SDCCH4', 'SDCCH8', 'TCHF', 'TCHH'];
 // AIRREC enregistre les 8 timeslots dans le MÊME fichier : la « source » ne
@@ -57,7 +62,17 @@ function pontPid() {
   } catch (e) { return 0; }
 }
 
-function readKc(getLastKc) {
+// Repli autonome : même ordre d'autorité que server.js, l1 puis historique.
+function lireKcRepli() {
+  for (const p of [KC_L1_PATH, KC_PATH]) {
+    let b;
+    try { b = fs.readFileSync(p); } catch (e) { continue; }
+    if (b.length >= 14) return { algo: b[4], kc: b.slice(6, 14) };
+  }
+  return null;
+}
+
+function readKc(getLastKc, readKcRecord) {
   function pack(bytes) {
     // Deux formes : espacée pour l'affichage, COMPACTE pour la ligne de commande.
     // grgsm accepte '1234567890ABCDEF' comme '0x12,0x34,...' ; l'opérateur veut
@@ -65,17 +80,14 @@ function readKc(getLastKc) {
     const hex = Array.from(bytes).map(function (x) { return x.toString(16).padStart(2, '0'); });
     return { spaced: hex.join(' '), compact: hex.join('') };
   }
-  try {
-    const b = fs.readFileSync(KC_PATH);
-    if (b.length >= 14) {
-      const algo = b[4];
-      const kc = b.slice(6, 14);
-      if (algo !== 0 && !kc.every(function (x) { return x === 0; })) {
-        const f = pack(kc);
-        return { present: true, algo: algo, spaced: f.spaced, compact: f.compact, fromCache: false, ageMs: 0 };
-      }
-    }
-  } catch (e) {}
+  // On lisait /dev/shm/calypso_kc EN DUR — le fichier partagé qu'osmocon remet à
+  // zéro. D'où « Kc absent » sur une capture pourtant chiffrée. Voir le bloc Kc
+  // de server.js pour la chaîne complète.
+  const rec = readKcRecord ? readKcRecord() : lireKcRepli();
+  if (rec && rec.algo !== 0 && !Array.from(rec.kc).every(function (x) { return x === 0; })) {
+    const f = pack(rec.kc);
+    return { present: true, algo: rec.algo, spaced: f.spaced, compact: f.compact, fromCache: false, ageMs: 0 };
+  }
   const last = getLastKc && getLastKc();
   if (last) return { present: true, algo: last.algo, spaced: last.spaced,
                      compact: String(last.spaced).replace(/\s+/g, ''),
@@ -105,6 +117,7 @@ module.exports = function (deps) {
   const broadcast = deps.broadcast;
   const log = deps.log || function () {};
   const getLastKc = deps.getLastKc || function () { return null; };
+  const readKcRecord = deps.readKcRecord || null;
 
   function status() {
     if (!cur) return { running: false };
@@ -192,7 +205,7 @@ module.exports = function (deps) {
 
     const kc = c.kcManual
       ? { present: true, algo: 1, spaced: c.kcManual, compact: c.kcManual, fromCache: false, ageMs: 0, manual: true }
-      : readKc(getLastKc);
+      : readKc(getLastKc, readKcRecord);
     const cmds   = dl ? buildCmds(c.cfg, dl.out, kc, c.m, c.t) : { ciphered: '', deciphered: '' };
     const cmdsUl = ul ? buildCmds(c.cfg, ul.out, kc, c.m, c.t) : { ciphered: '', deciphered: '' };
 
