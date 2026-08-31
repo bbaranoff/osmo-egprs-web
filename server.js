@@ -1704,7 +1704,7 @@ setInterval(function () {
   if (r && r.algo >= 1 && r.algo <= 3 && !r.kc.every(function (x) { return x === 0; })) {
     lastKc = { algo: r.algo,
                spaced: Array.from(r.kc).map(function (x) { return x.toString(16).padStart(2, '0'); }).join(' '),
-               tsMs: Date.now() };
+               tsMs: Date.now(), src: 'shm' };
   }
 }, 250);
 const recorder = require('./rec.js')({ broadcast: recBroadcast, log: log,
@@ -1771,7 +1771,11 @@ function readA5Status() {
     kcSrc  = null;   // le teardown a effacé les deux fichiers : on ré-élit la source
     log('[a5] nouveau run (osmo-bsc pid=' + (run || '?') + ') — badge remis à ' + a5Latch.mode);
   }
-  if (lastKc && lastKc.algo >= 1) { a5Latch.seen = true; a5Latch.algo = lastKc.algo; }
+  // src !== 'vty' : le VTY prouve que l'ABONNE detient un Kc (issu de
+  // l'authentification), pas qu'un chiffrement a eu lieu sur l'air. Seule une
+  // cle vue sur la L1 (shm) verrouille le badge, sinon il passerait a « A5/1 vu »
+  // des l'authentification d'un reseau qui n'a encore rien chiffre.
+  if (lastKc && lastKc.algo >= 1 && lastKc.src !== 'vty') { a5Latch.seen = true; a5Latch.algo = lastKc.algo; }
   // `algo` reflète le mode de session tant qu'aucune clé n'a été observée : sans
   // ça le badge afficherait « clair » pendant toute la phase d'attachement d'un
   // réseau pourtant configuré en a5/1.
@@ -1779,7 +1783,70 @@ function readA5Status() {
   var algo = a5Latch.algo || (mAlgo ? parseInt(mAlgo[1], 10) : 0);
   return { mode: a5Latch.mode, algo: algo, active: a5Latch.seen, session: true };
 }
-setInterval(function () { var d = readA5Status(); d.lastKc = lastKc ? lastKc.spaced : ''; recBroadcast({ type: 'a5_status', data: d }); }, 3000);
+// ─── Kc PAR LE VTY DU MOBILE : LA SOURCE QUI SURVIT ─────────────────────────
+// [2026-08-31] /dev/shm/calypso_kc_l1 dit l'etat de chiffrement de la L1 A CET
+// INSTANT : le shunt le remet a zero des que le firmware repasse en clair.
+// Mesure, un seul run : seq=1 EN CLAIR -> seq=2 A5/1 Kc=c7d20e13126d0c00 ->
+// seq=3 EN CLAIR. Echantillonner ce fichier toutes les 250 ms, c'est donc le
+// trouver a zero la plupart du temps, et perdre la cle pour de bon si le tick
+// tombe a cote de la fenetre chiffree.
+//
+// Le mobile, LUI, la garde : subscr->key vient du vecteur d'authentification et
+// ne suit pas l'etat de la couche 1. `show subscriber` l'imprime
+// (osmocom-bb common/vty.c:241 -> subscriber.c:518) :
+//     Key: sequence 0  c7 d2 0e 13 12 6d 0c 00
+// Verifie le 31/08 sur osmo-operator-2 : MEME valeur que celle journalisee par
+// le shunt, et encore la alors que le fichier etait deja remis a zero.
+//
+// Lecture SEULE, sans effet de bord : une connexion courte, une commande
+// d'affichage, on referme. Aucun effet sur le pipeline radio.
+var KC_VTY_PORT    = parseInt(process.env.OSMO_KC_VTY_PORT || VTY_PORTS.bb1, 10);
+var KC_VTY_TIMEOUT = 2500;
+
+// « Key: sequence 0  c7 d2 0e 13 12 6d 0c 00 » -> { seq, spaced }. Une cle a 8
+// octets nuls n'en est pas une : le mobile n'imprime la ligne que si key_seq
+// != 7, mais autant ne pas propager un cas degenere.
+function kcParseVty(txt) {
+  var m = /Key:\s*sequence\s+(\d+)\s+((?:[0-9a-fA-F]{2}\s+){7}[0-9a-fA-F]{2})/.exec(txt);
+  if (!m) return null;
+  var oct = m[2].trim().split(/\s+/).map(function (x) { return x.toLowerCase(); });
+  if (oct.length !== 8 || oct.every(function (x) { return x === '00'; })) return null;
+  return { seq: parseInt(m[1], 10), spaced: oct.join(' ') };
+}
+
+function kcPollVty(cb) {
+  var net = require('net'), buf = '', done = false, s;
+  function fini(res) { if (done) return; done = true; try { s.destroy(); } catch (e) {} cb(res); }
+  try { s = require('net').connect({ host: '127.0.0.1', port: KC_VTY_PORT }); }
+  catch (e) { return cb(null); }
+  s.setTimeout(KC_VTY_TIMEOUT);
+  s.on('error',   function () { fini(null); });
+  s.on('timeout', function () { fini(kcParseVty(buf)); });
+  s.on('close',   function () { fini(kcParseVty(buf)); });
+  // La banniere arrive avant l'invite : on laisse le VTY s'annoncer, sinon la
+  // commande part dans le vide et il ne repond jamais.
+  s.on('connect', function () { setTimeout(function () { try { s.write('show subscriber\r\n'); } catch (e) {} }, 300); });
+  s.on('data', function (d) { buf += d.toString('utf8'); var r = kcParseVty(buf); if (r) fini(r); });
+}
+
+// 5 s : c'est un aller-retour reseau, pas une lecture de fichier — et une cle
+// qui ne bouge qu'a l'authentification n'a pas besoin de mieux.
+setInterval(function () {
+  kcPollVty(function (r) {
+    if (!r) return;
+    // L'ALGO ne vient pas du VTY. On garde celui que la L1 a publie si on l'a
+    // vu, sinon celui que le BSC impose : le badge et la commande grgsm doivent
+    // parler du meme A5.
+    var algo = (lastKc && lastKc.algo >= 1) ? lastKc.algo : (a5Latch.algo || 0);
+    if (!algo) { var mm = /a5\D*([1-3])/.exec(a5Latch.mode); algo = mm ? parseInt(mm[1], 10) : 1; }
+    if (!lastKc || lastKc.spaced !== r.spaced || lastKc.src !== 'vty')
+      log('[kc] VTY ' + KC_VTY_PORT + ' : Kc=' + r.spaced.replace(/ /g, '') +
+          ' (key_seq ' + r.seq + ', A5/' + algo + ')');
+    lastKc = { algo: algo, spaced: r.spaced, tsMs: Date.now(), src: 'vty' };
+  });
+}, 5000);
+
+setInterval(function () { var d = readA5Status(); d.lastKc = lastKc ? lastKc.spaced : ''; d.kcSrc = lastKc ? lastKc.src : ''; recBroadcast({ type: 'a5_status', data: d }); }, 3000);
 
 wss.on('connection', function(ws, req) {
   log('Client connected from ' + req.socket.remoteAddress);
