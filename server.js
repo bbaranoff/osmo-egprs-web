@@ -1125,7 +1125,7 @@ const FFT_NSEG_MAX = parseInt(process.env.NSEG_MAX || '16', 10);
  * voyagent dans /psd (que les pages interrogent deja en continu) et se changent
  * A CHAUD via /fftcfg?palette=..&dr=..&zoom=..&dir=..
  * Au lancement : FFT_PALETTE, FFT_DR, FFT_ZOOM, FFT_WF_DIR. */
-var FFT_PALETTE = String(process.env.FFT_PALETTE || 'inferno').toLowerCase();
+var FFT_PALETTE = String(process.env.FFT_PALETTE || 'turbo').toLowerCase();
 var FFT_DR      = parseFloat(process.env.FFT_DR || '40');            // dB sous le max
 var FFT_WF_DIR  = String(process.env.FFT_WF_DIR || 'down').toLowerCase();  // down = neuve EN HAUT
 /* ZOOM : 1 = bande complete. 4 = quart central. Le rognage est fait ICI : les
@@ -1171,9 +1171,39 @@ const FFT_SRC = {
   // spectre montant. Le pane s'appelait « Calypso DSP shunt legit » alors qu'il
   // n'affichait aucun DSP : le nom designait un producteur qui ne produisait
   // plus rien de ce cote-la.
-  ms:  { path: process.env.CFILE_MS  || '/tmp/iq_fft_ms.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — montant (iq_fft_ms.fifo)' },
-  bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)' },
+  ms:  { path: process.env.CFILE_MS  || '/tmp/iq_fft_ms.fifo', arfcn: process.env.ARFCN_MS  || '514', label: 'MS — montant (iq_fft_ms.fifo)',
+         niveau: 1, sens: 'UL', producteur: 'pont.py --record (PONT_AIRREC_UL_FIFO)',
+         aide: 'Les bursts que le mobile emet (ROM du DSP), remodules en GMSK par le pont : ce que la BTS doit recevoir.' },
+  bts: { path: process.env.CFILE_BTS || '/tmp/iq_fft.fifo',      arfcn: process.env.ARFCN_BTS || '514', label: 'BTS — DL relay LIVE (iq_fft.fifo)',
+         niveau: 1, sens: 'DL', producteur: 'pont.py --record (PONT_AIRREC_DL_FIFO)',
+         aide: "Les bursts qu'osmo-bts-trx envoie (TRXD), remodules en GMSK par le pont : l'air descendant vu par le mobile." },
+  // ── Other levels of the chain (/api/fft/sources tells which exist) ────────
+  'dsp-in':  { path: process.env.FIFO_DSP_IN || '/dev/shm/dsp_iq.fifo', arfcn: process.env.ARFCN_MS || '514',
+               label: "Entree du DSP (dsp_iq.fifo)", niveau: 2, sens: 'DL', live: true,
+               // one sample per symbol: the GMSK the BSP hands to the DSP
+               rate: 1625000 / 6,
+               absent: "pas d'IQ du DSP : c54x_exe recompile avec l'export (bsp_iq_exporter) doit tourner - redemarre le banc",
+               producteur: 'c54x_exe, BSP (calypso_bsp.c, bsp_iq_exporter)',
+               aide: "L'IQ que le BSP remet au C54x emule, apres modulation GMSK des bits du pont : ce que la ROM demodule reellement." },
 };
+// The levels of the chain, from the radio relay down to the disk.
+const FFT_NIVEAUX = {
+  1: { titre: 'Air reconstruit par le pont', aide: 'Les bursts echanges entre osmo-bts-trx et le mobile, remodules en GMSK (OSR 4) par pont.py.' },
+  2: { titre: 'Entree du DSP C54x', aide: "L'IQ que le BSP de c54x_exe remet au DSP emule, apres modulation GMSK des bits du pont : la derniere etape avant la ROM." },
+};
+function fftSources() {
+  var now = Date.now();
+  return Object.keys(FFT_SRC).map(function (id) {
+    var s = FFT_SRC[id], st = null, p = (id === 'ms' || id === 'bts') ? fftPath(id, s) : s.path;
+    try { st = fs.statSync(p); } catch (e) {}
+    var fifo = st ? st.isFIFO() : false, live = fftState[id];
+    var actif = fifo ? !!(live && now - live.last < 3000)
+                     : !!(st && st.size > 0 && now - st.mtimeMs < 5000);
+    return { id: id, label: s.label, niveau: s.niveau || 0, sens: s.sens || '', producteur: s.producteur || '',
+             aide: s.aide || '', chemin: p, present: !!st, fifo: fifo, actif: actif,
+             taille: st && !fifo ? st.size : null };
+  });
+}
 var fftState = {};                                                  // src -> { fd, buf:Buffer }
 
 // Logs adossés à chaque spectre (queue brute, ANSI conservé → colorisé côté web).
@@ -1410,7 +1440,8 @@ function fftReadTail(p) {                                           // cfile qui
   return new Float32Array(a.buffer, 0, nbytes >> 2);
 }
 
-function fftWelch(fl) {                                             // fl: Float32Array [re,im,...] → {freqs,psd} sous-échantillonnés
+function fftWelch(fl, rate) {                                       // fl: Float32Array [re,im,...] → {freqs,psd} sous-échantillonnés
+  rate = rate || FFT_RATE;                                          // per source (the DSP input is at 1 sps)
   var nsamp = fl.length >> 1;
   if (nsamp < FFT_NFFT) return null;
   var nseg = Math.min((nsamp / FFT_NFFT) | 0, FFT_NSEG_MAX);
@@ -1434,7 +1465,7 @@ function fftWelch(fl) {                                             // fl: Float
   for (var k = 0; k < FFT_NFFT; k += step) {
     if (k < kLo || k > kHi) continue;
     var srcBin = (k + half) % FFT_NFFT;                            // fftshift
-    freqs.push(Math.round((k - half) * FFT_RATE / FFT_NFFT / 1e3 * 10) / 10);   // kHz, 1 décimale
+    freqs.push(Math.round((k - half) * rate / FFT_NFFT / 1e3 * 10) / 10);   // kHz, 1 décimale
     psd.push(Math.round((10 * Math.log10(acc[srcBin] / nseg + 1e-12)) * 100) / 100);
   }
   return { freqs: freqs, psd: psd };
@@ -1456,7 +1487,9 @@ function fftWelch(fl) {                                             // fl: Float
 // pont (le cas courant) ; /dev/shm/dsp_iq.fifo reste pour shunt_legit, ou le
 // producteur est calypso-ipc-device.
 const FFT_FIFO_PREF = {
-  ms:  (process.env.FIFO_MS  || '/tmp/iq_fft_ms.fifo,/dev/shm/dsp_iq.fifo').split(','),
+  // One source per signal: the DSP input (dsp_iq.fifo) is the source 'dsp-in',
+  // no longer a fallback of 'ms' (it showed the same spectrum twice).
+  ms:  (process.env.FIFO_MS  || '/tmp/iq_fft_ms.fifo').split(','),
   bts: (process.env.FIFO_BTS || '/tmp/iq_fft.fifo').split(','),
 };
 function fftPath(src, s) {
@@ -1530,12 +1563,13 @@ function psdJson(src) {
   if (!FFT_SRC[src]) src = 'ms';
   var s = FFT_SRC[src];
   try {
-    var p = fftPath(src, s);
+    var p = (src === 'ms' || src === 'bts') ? fftPath(src, s) : s.path;
+    if (s.live && !fs.existsSync(p)) return { error: s.absent || ('source absente (' + p + ')'), label: s.label };
     var fl = fftIsFifo(p) ? fftReadLive(src, p) : fftReadTail(p);
-    var r = fl ? fftWelch(fl) : null;
+    var r = fl ? fftWelch(fl, s.rate) : null;
     if (!r) return { error: "flux pas encore prêt (pas assez d'échantillons)", label: s.label };
     r.psd = psdSmooth(src, r.psd);
-    return { label: s.label, arfcn: s.arfcn, rate: FFT_RATE, freqs: r.freqs, psd: r.psd,
+    return { label: s.label, arfcn: s.arfcn, rate: s.rate || FFT_RATE, freqs: r.freqs, psd: r.psd,
              palette: FFT_PALETTE, dr: FFT_DR, wfdir: FFT_WF_DIR, zoom: FFT_ZOOM,
              flip: FFT_FLIP, gain: FFT_GAIN, ofs: FFT_OFS };
   } catch (e) {
@@ -1570,14 +1604,24 @@ function logTail(which) {                                           // queue bru
   }
 }
 
+// Configuration (osmo-operator's SQL base) and start/stop of the bench: conf-api.js
+const confApi = require('./conf-api');
+
 const httpServer = http.createServer(function(req, res) {
+  if (confApi.handle(req, res)) return;
+  if (req.url === '/conf') { req.url = '/conf.html'; }
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ operators: operators, activeOpIds: activeOpIds, tsharkActive: tsharkActiveClients > 0 }));
   }
+  if (req.url.split('?')[0] === '/api/fft/sources') {   // the IQ sources, by level of the chain
+    var sb = Buffer.from(JSON.stringify({ niveaux: FFT_NIVEAUX, sources: fftSources() }));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': sb.length });
+    return res.end(sb);
+  }
   if (req.url.split('?')[0] === '/psd') {     // FFT natif (Welch PSD en JS) → onglet FFT du dashboard
-    var m = /[?&]src=(ms|bts)/.exec(req.url);
-    var body = Buffer.from(JSON.stringify(psdJson(m ? m[1] : 'ms')));
+    var m = /[?&]src=([a-z0-9_-]+)/.exec(req.url);
+    var body = Buffer.from(JSON.stringify(psdJson(m && FFT_SRC[m[1]] ? m[1] : 'ms')));
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': body.length });
     return res.end(body);
   }

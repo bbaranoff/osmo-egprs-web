@@ -1,0 +1,137 @@
+/* theme.css - osmo-egprs-web, light theme
+   ============================================================================
+   Light everywhere; DARK only for the small things that must stand out:
+   the active tab, the selected row, the main actions, the terminals (VTY,
+   hex dump, logs) and the spectra. Loaded
+   after the inline style of index.html: same class names, new values.
+   The layout is responsive by itself (no more transform: scale()).
+*/
+:root, [data-theme="dark"], [data-theme="light"] {
+  --bg-0:#eef1f5; --bg-1:#ffffff; --bg-2:#f4f6f9; --bg-3:#e7ebf1;
+  --border:#dde2ea; --border-b:#c9d1dc;
+  --t0:#0f1b24; --t1:#22313d; --t2:#56636e; --t3:#8793a0;
+  /* accents, darker than Solarized's to stay readable on white */
+  --yellow:#9a7400; --orange:#c0501a; --red:#c62828; --magenta:#b0306f;
+  --violet:#5c5fb8; --blue:#1f6fb8; --cyan:#0d8a82; --green:#5f8a00;
+  /* the dark parts */
+  --ink:#0f1b24; --ink-2:#172733; --ink-3:#22394a; --ink-t:#e3ebf1; --ink-t2:#9fb3c2;
+  --term-bg:#0f1b24; --term-text:#d7e1e8;
+  --hex-offset:#7a8b96; --hex-byte:#d7e1e8; --hex-ascii:#a9c94a; --hex-highlight:rgba(42,161,152,.18);
+  --shadow:0 4px 18px rgba(15,27,36,.10);
+  --r:10px;
+}
+html, body { font-size:14px; background:var(--bg-0); color:var(--t1); }
+#app { transform:none !important; width:100% !important; height:100% !important; display:flex; flex-direction:column; }
+body.app-scroll { overflow:hidden; }
+
+/* ── the top bar: light, taller, wraps instead of squeezing ──────────────── */
+header {
+  background:#ffffff; color:var(--t1); border-bottom:1px solid var(--border); box-shadow:0 1px 8px rgba(15,27,36,.06);
+  height:auto; min-height:64px; padding:10px 18px; gap:10px 14px; flex-wrap:wrap; align-items:center;
+}
+header .logo { display:inline-flex; align-items:center; gap:10px; color:var(--ink); text-decoration:none; font-size:17px; letter-spacing:.02em; }
+header .logo-mark { width:34px; height:34px; border-radius:9px; display:grid; place-items:center; font-size:11px; font-weight:800;
+  color:#fff; background:var(--ink); }
+header .sep { background:var(--border); height:28px; }
+header .htag { background:var(--bg-2); color:var(--t2); border:1px solid var(--border); padding:4px 11px; border-radius:999px; font-size:12px; }
+header .htag.on { background:#eef6e3; color:var(--green); border-color:#cfe3b0; }
+.hright { margin-left:auto; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+header .btn { background:#fff; border:1px solid var(--border-b); color:var(--t1); padding:8px 14px; font-size:13px; border-radius:8px; text-decoration:none; }
+header .btn:hover { background:var(--bg-2); color:var(--t0); }
+header .btn.primary { background:var(--ink); border-color:var(--ink); color:#fff; }
+header .btn.primary:hover { background:var(--ink-3); color:#fff; }
+header .btn.danger { background:#fff; border-color:#e6b4b1; color:var(--red); }
+header .btn.danger:hover { background:#fdecea; color:var(--red); }
+header .btn.vty-btn { border-color:#9bd3cd; color:var(--cyan); }
+header .btn.conf-btn { background:var(--blue); border-color:var(--blue); color:#fff; }
+header .btn.conf-btn:hover { background:#2a82d4; color:#fff; }
+header input.btn { background:#fff; color:var(--t1); }
+header input.btn::placeholder { color:var(--t3); }
+.vtabs { flex-wrap:nowrap; background:var(--bg-2); border:1px solid var(--border); padding:3px; border-radius:10px; gap:2px; }
+.vtab { white-space:nowrap; background:transparent; border:0; color:var(--t2); padding:7px 14px; border-radius:7px; font-size:13px; }
+.vtab:hover { color:var(--t0); background:#fff; }
+.vtab.active { background:var(--ink); color:#fff; border:0; }
+.a5tag.a5on, .a5tag.on { background:#fdecea !important; color:var(--red) !important; border-color:#f3c3bf !important; }
+#ws-txt { color:var(--t3); }
+.dot.on { background:#4caf50; box-shadow:0 0 6px rgba(76,175,80,.6); }
+.dot.off { background:#e53935; box-shadow:0 0 6px rgba(229,57,53,.5); }
+
+/* ── main: fills the window, columns fold on small screens ──────────────── */
+#main { flex:1; min-height:0; grid-template-columns:260px minmax(0,1fr); gap:12px; padding:12px; background:var(--bg-0); }
+.panel, #capture-area { background:var(--bg-1); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow); overflow:hidden; }
+#capture-area { display:flex; flex-direction:column; min-height:0; }
+.ph { background:var(--bg-1); border-bottom:1px solid var(--border); padding:10px 14px; }
+.ph h2 { color:var(--t2); font-size:11px; }
+.ph .badge { background:var(--bg-3); color:var(--t1); border-radius:999px; padding:2px 9px; }
+
+/* operators: light cards, the active one marked in dark */
+.op-card { background:var(--bg-2); border:1px solid var(--border); border-left:4px solid var(--border-b); border-radius:8px; margin:8px; }
+.op-card.on { border-left-color:var(--green); }
+.op-card.expanded { background:#fff; border-color:var(--border-b); border-left-color:var(--ink); }
+.ms-chip { background:var(--bg-3); color:var(--t1); border-radius:999px; }
+
+/* capture toolbar and packet table: light, readable */
+#cap-toolbar { background:var(--bg-1); border-bottom:1px solid var(--border); padding:10px 12px; gap:10px; }
+#cap-filter { background:var(--bg-2); border:1px solid var(--border-b); border-radius:8px; color:var(--t0); padding:8px 12px; }
+#cap-filter:focus { border-color:var(--blue); background:#fff; }
+#pkt-list-wrap { background:var(--bg-1); flex:1; min-height:120px; }
+.pkt-table thead { background:var(--bg-2); }
+.pkt-table th { color:var(--t3); background:var(--bg-2); border-bottom:1px solid var(--border); }
+.pkt-table td { color:var(--t1); border-bottom:1px solid #eef1f5; }
+.pkt-table tr:hover td { background:#f3f7fb; }
+.pkt-table tr.selected td { background:var(--ink) !important; color:#fff !important; }
+.proto { border-radius:5px; font-weight:700; }
+
+/* packet detail: light, the hex dump and raw JSON stay dark (they are read closely) */
+#pkt-detail-wrap { background:var(--bg-1); color:var(--t1); border-top:1px solid var(--border); }
+#pkt-detail-wrap .ph { background:var(--bg-2); border-bottom:1px solid var(--border); }
+#detail-tabs { background:var(--bg-2); border-bottom:1px solid var(--border); }
+#detail-tabs button { color:var(--t2); }
+#detail-tabs button.active { color:var(--ink); border-bottom-color:var(--ink); }
+#detail-content, #pkt-detail { background:var(--bg-1); color:var(--t1); }
+.layer-name { color:var(--t0); }
+.field-key { color:var(--t2); }
+.field-val { color:var(--t0); }
+.field-row:hover { background:var(--bg-2); }
+#pkt-hex, #pkt-raw, .hex-dump { background:var(--term-bg) !important; color:var(--term-text); border-radius:8px; }
+
+/* VTY and packet popups: dark terminals with a light frame */
+.vty-popup, .pkt-popup { background:var(--ink); border:1px solid var(--ink-3); border-radius:12px; box-shadow:0 18px 50px rgba(15,27,36,.35); overflow:hidden; }
+.vty-popup-header { background:var(--ink-2); border-bottom:1px solid var(--ink-3); color:var(--ink-t); }
+.vty-popup-header .title { color:#fff; }
+.vty-popup-header select { background:var(--ink-3); color:var(--ink-t); border-color:var(--ink-3); }
+.vty-screen, .vty-input-row, .vty-input-row input { background:var(--term-bg); color:var(--term-text); }
+
+/* FFT: light page, dark spectra and logs */
+#fft-view { background:var(--bg-0); padding:12px; }
+.fft-card { background:var(--bg-1); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow); min-width:min(380px,100%); }
+.fft-t { color:var(--t0); font-weight:700; }
+.fft-card canvas, .fft-log { background:var(--term-bg); color:var(--term-text); border:0; }
+
+/* scrollbars */
+.pb::-webkit-scrollbar-thumb, #pkt-list-wrap::-webkit-scrollbar-thumb { background:var(--border-b); }
+
+/* ── small screens: one column, operators as a strip, everything fills ──── */
+@media (max-width: 1100px) {
+  #main { display:flex; flex-direction:column; }
+  #op-panel { display:flex !important; flex:0 0 auto; }
+  #op-panel .pb { display:flex; overflow-x:auto; gap:0; }
+  #op-panel .op-card { min-width:220px; }
+  #capture-area { flex:1 1 auto; min-height:0; }
+  #pkt-detail-wrap { height:40%; }
+}
+@media (max-width: 700px) {
+  header { padding:8px 10px; min-height:56px; }
+  .hright { margin-left:0; width:100%; justify-content:flex-start; }
+  header .btn { padding:7px 10px; font-size:12px; }
+  #main { padding:6px; gap:6px; }
+  .pkt-table th:nth-child(4), .pkt-table td:nth-child(4), .pkt-table th:nth-child(6), .pkt-table td:nth-child(6) { display:none; }
+  .fft-card { min-width:100%; }
+}
+
+/* confirmation of start / stop (index.html, bancAvis) */
+.banc-avis { position:fixed; top:76px; right:18px; z-index:60; max-width:520px; white-space:pre-line;
+  padding:12px 16px; border-radius:10px; font-weight:600; box-shadow:0 10px 30px rgba(15,27,36,.25);
+  background:#fff; border:1px solid var(--border); border-left:5px solid var(--blue); color:var(--t0); }
+.banc-avis.ok { border-left-color:#2f7d32; } .banc-avis.ko { border-left-color:var(--red); color:#7f1d1d; background:#fdecea; }
+.banc-avis.attente { border-left-color:var(--yellow); }

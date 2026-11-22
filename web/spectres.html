@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectres — chaine radio du banc</title>
+<style>
+  /* Light page, dark spectra (same palette as theme.css). One card per SIGNAL:
+     a signal is shown once; uplink and downlink face to face. */
+  :root {
+    --bg0:#eef1f5; --bg1:#fff; --bg2:#f4f6f9; --bg3:#e7ebf1; --ligne:#dde2ea; --ligne2:#c9d1dc;
+    --t0:#0f1b24; --t1:#22313d; --t2:#56636e; --t3:#8793a0;
+    --ink:#0f1b24; --ink2:#172733; --ink3:#22394a; --inkt:#e3ebf1; --inkt2:#9fb3c2;
+    --dl:#1f6fb8; --ul:#c0501a; --delta:#9a7400; --ok:#2f7d32; --ko:#c62828;
+    --mono:"Fira Code",ui-monospace,monospace; --sans:"Source Sans 3",system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg0); color:var(--t1); font:14px/1.45 var(--sans); }
+  main { padding:14px; display:flex; flex-direction:column; gap:14px; }
+  .carte { background:var(--bg1); border:1px solid var(--ligne); border-radius:12px; box-shadow:0 4px 18px rgba(15,27,36,.08); padding:12px 14px; }
+  h2 { margin:0 0 .5rem; font-size:1.05rem; color:var(--t0); display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
+  .aide { color:var(--t2); font-size:.88rem; }
+
+  /* the chain */
+  .chaine { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; }
+  .niveau { background:var(--bg2); border:1px solid var(--ligne); border-radius:10px; padding:10px; }
+  .niveau h3 { margin:0 0 .2rem; font-size:.95rem; color:var(--t0); }
+  .niveau .num { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:6px; background:var(--ink); color:#fff; font-size:.75rem; margin-right:.4rem; }
+  .src { display:flex; align-items:center; gap:.5rem; margin-top:.45rem; padding:.45rem .6rem; border-radius:8px; border:1px solid var(--ligne2);
+         background:var(--bg1); cursor:pointer; user-select:none; }
+  .src:hover { border-color:var(--ink3); }
+  .src.on { background:var(--ink); border-color:var(--ink); color:#fff; }
+  .src .pt { width:10px; height:10px; border-radius:50%; background:#c4ccd6; flex:none; }
+  .src .pt.present { background:#e0a800; } .src .pt.actif { background:#43a047; box-shadow:0 0 6px #43a047; }
+  .sens { font-family:var(--mono); font-size:.72rem; font-weight:700; padding:.05rem .45rem; border-radius:999px; color:#fff; }
+  .sens.DL { background:var(--dl); } .sens.UL { background:var(--ul); }
+  .src small { color:inherit; opacity:.75; font-family:var(--mono); font-size:.75rem; margin-left:auto; }
+
+  /* spectra */
+  .grille { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(460px,100%),1fr)); gap:14px; }
+  .spec .entete { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.4rem; }
+  .spec .titre { font-weight:700; color:var(--t0); }
+  .spec .chemin { font-family:var(--mono); font-size:.75rem; color:var(--t3); }
+  canvas { width:100%; display:block; background:var(--ink); border-radius:8px; }
+  canvas.psd { height:220px; } canvas.wf { height:160px; margin-top:6px; image-rendering:pixelated; }
+  .err { font-family:var(--mono); font-size:.8rem; color:var(--ko); min-height:1.1em; margin-top:.3rem; }
+  .vide { color:var(--t3); text-align:center; padding:2rem; }
+  select, button { font:inherit; background:var(--bg1); border:1px solid var(--ligne2); border-radius:8px; padding:.35rem .6rem; color:var(--t1); }
+  button { cursor:pointer; font-weight:600; } button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  pre.log { background:var(--ink); color:var(--inkt); font:12px/1.4 var(--mono); border-radius:8px; padding:.6rem .8rem; max-height:280px; overflow:auto; white-space:pre-wrap; margin:.3rem 0 0; }
+  details summary { cursor:pointer; font-weight:700; color:var(--t0); }
+  /* MS on the left, BTS on the right, both flowing down; in the middle they
+     meet: the downlink enters at the top and falls, the uplink enters at the
+     bottom and rises, the two meet on the "air" line */
+  .trio { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; align-items:start; }
+  .milieu .cascade { margin-top:6px; }
+  .milieu canvas.demi { height:calc((150px + 300px + 30px) / 2); }
+  .milieu .rencontre { margin-top:6px; }
+  .rencontre { display:flex; justify-content:space-between; align-items:center; padding:.15rem .6rem; border-radius:6px;
+               background:var(--ink); color:var(--inkt2); font:600 .78rem var(--mono); }
+  .rencontre b { color:#fff; letter-spacing:.2em; text-transform:uppercase; }
+  .col-t { font-weight:700; color:var(--t0); margin-bottom:.3rem; font-size:.9rem; }
+  .col-t.delta { color:var(--delta); }
+  .dialogue { font:12px/1.35 var(--mono); max-height:240px; overflow:auto; background:var(--bg2); border:1px solid var(--ligne); border-radius:8px; padding:.4rem .5rem; }
+  .dialogue div.m { padding:.12rem .3rem; border-radius:5px; margin:.1rem 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dialogue div.UL { background:#fdeee6; color:#8a3510; margin-right:18%; }
+  .dialogue div.DL { background:#e6f0fb; color:#164f86; margin-left:18%; text-align:right; }
+  canvas.wf.haut { height:300px; }
+  .trio canvas.psd { height:150px; }
+  /* the labels live on a layer above the waterfall, redrawn at each frame:
+     written into the image they smeared as it scrolled */
+  .cascade { position:relative; margin-top:6px; }
+  .reglages { display:flex; flex-wrap:wrap; gap:.3rem .9rem; align-items:center; margin-top:6px; font-size:.8rem; color:var(--t2); }
+  .reglages label { display:inline-flex; align-items:center; gap:.35rem; }
+  .reglages input[type=range] { width:110px; accent-color:var(--ink); }
+  .reglages b { font-family:var(--mono); color:var(--t0); min-width:3.6em; display:inline-block; }
+  .reglages button { padding:.05rem .45rem; font-size:.8rem; }
+  .cascade canvas.wf { margin-top:0; }
+  .cascade canvas.ov { position:absolute; inset:0; width:100%; height:100%; background:transparent; pointer-events:none; border-radius:8px; }
+  @media (max-width:1000px) { .trio { grid-template-columns:1fr; } canvas.wf.haut { height:180px; } .milieu canvas.demi { height:140px; } }
+  @media (max-width:700px) { main { padding:8px; } canvas.psd { height:170px; } canvas.wf { height:120px; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="carte">
+    <h2>Chaîne radio du banc <span class="aide">une source par signal — clic : la met en A (montante) ou en B (descendante)</span></h2>
+    <div class="chaine" id="chaine"></div>
+  </section>
+
+  <section class="carte" id="cmp">
+    <h2>Uplink ↔ Downlink
+      <select id="cA"></select> <span class="aide">face à</span> <select id="cB"></select>
+      <span class="aide">les deux cascades avancent ensemble : une ligne = le même instant, un trait blanc à gauche = une seconde</span></h2>
+    <label class="aide" style="display:inline-flex;gap:.35rem;align-items:center;margin-bottom:.5rem">
+      <input type="checkbox" id="annoter" checked> dialogue MS ↔ BTS (signalisation radio, capture tshark de la console)</label>
+    <label class="aide" style="display:inline-flex;gap:.35rem;align-items:center;margin:0 0 .5rem 1rem">
+      <input type="checkbox" id="fond"> aussi les messages de fond (SYSTEM INFORMATION, mesures, LAPDm)</label>
+    <div class="trio">
+      <div><div class="col-t"><span id="tA"></span></div><canvas class="psd" id="aPsd"></canvas><div class="reglages" data-col="a"></div>
+        <div class="cascade"><canvas class="wf haut" id="aWf"></canvas><canvas class="ov"></canvas></div></div>
+      <div class="milieu"><div class="col-t">Rencontre dans l'air</div>
+        <div class="aide">↓ le descendant entre en haut, ↑ le montant entre en bas : ils se rejoignent au milieu </div>
+        <div class="cascade"><canvas class="wf demi" id="mDl"></canvas><canvas class="ov"></canvas></div>
+        <div class="rencontre"><span>↓ BTS</span><b>l'air</b><span>MS ↑</span></div>
+        <div class="cascade"><canvas class="wf demi" id="mUl" data-flux="haut"></canvas><canvas class="ov"></canvas></div></div>
+      <div><div class="col-t"><span id="tB"></span></div><canvas class="psd" id="bPsd"></canvas><div class="reglages" data-col="b"></div>
+        <div class="cascade"><canvas class="wf haut" id="bWf"></canvas><canvas class="ov"></canvas></div></div>
+    </div>
+    <div class="err" id="dErr"></div>
+    <div class="col-t" style="margin-top:.6rem">Dialogue MS ↔ BTS</div><div class="dialogue" id="dialogue"><div class="aide">en attente de messages radio…</div></div>
+  </section>
+
+
+  <section class="carte">
+    <details><summary>Journaux radio (mobile, BTS)</summary>
+      <div class="grille" style="margin-top:.6rem">
+        <div><b>mobile.log</b><pre class="log" id="lMs">…</pre></div>
+        <div><b>BTS / grgsm</b> <button class="on" data-l="bts_clair">clair</button> <button data-l="bts_ciph">chiffré</button><pre class="log" id="lBts">…</pre></div>
+      </div>
+    </details>
+  </section>
+</main>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let SOURCES = [], NIVEAUX = {}, affichees = JSON.parse(localStorage.getItem('spectres.on') || '["bts","ms"]');
+const derniers = {};   // id -> {freqs, psd}
+let logBts = 'bts_clair';
+
+// ── colour map: Turbo (Google, polynomial approximation) ──
+// Only the blue -> red part of Turbo: t=0 (noise floor) is BLUE, t=1 (peak)
+// is RED. The dark violet bottom and maroon top of the full map are left out.
+const TURBO_BAS = 0.10, TURBO_HAUT = 0.93;
+function couleur(t) {   // t in [0,1] -> [r,g,b]
+  t = TURBO_BAS + (TURBO_HAUT - TURBO_BAS) * Math.max(0, Math.min(1, t));
+  const r = 0.13572138 + t * (4.61539260 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
+  const g = 0.09140261 + t * (2.19418839 + t * (4.84296658 + t * (-14.18503333 + t * (4.27729857 + t * 2.82956604))));
+  const b = 0.10667330 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
+  return [r, g, b].map(v => Math.round(255 * Math.max(0, Math.min(1, v))));
+}
+function taille(c) { const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  const w = Math.max(50, Math.round(r.width * d)), h = Math.max(30, Math.round(r.height * d));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } return [w, h]; }
+
+function tracePsd(c, freqs, psd, coul, plancher, plafond) {
+  const [w, h] = taille(c), g = c.getContext('2d');
+  g.fillStyle = '#0f1b24'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(255,255,255,.07)'; g.lineWidth = 1;
+  for (let i = 1; i < 8; i++) { const x = i * w / 8; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  for (let i = 1; i < 5; i++) { const y = i * h / 5; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  const n = psd.length, k = (h - 14) / (plafond - plancher || 1);
+  g.strokeStyle = coul; g.lineWidth = 1.5 * (window.devicePixelRatio || 1); g.beginPath();
+  for (let i = 0; i < n; i++) { const x = i * w / (n - 1), y = h - 4 - (psd[i] - plancher) * k;
+    if (i) g.lineTo(x, y); else g.moveTo(x, y); }
+  g.stroke();
+  g.fillStyle = 'rgba(227,235,241,.8)'; g.font = `${11 * (window.devicePixelRatio || 1)}px monospace`;
+  g.fillText(plafond.toFixed(0) + ' dB', 6, 14 * (window.devicePixelRatio || 1));
+  if (freqs && freqs.length) {   // /psd gives kHz, centred on the carrier
+    g.fillText(freqs[0].toFixed(0) + ' kHz', 6, h - 6); g.fillText('0', w / 2 - 3, h - 6);
+    const t = '+' + freqs[n - 1].toFixed(0) + ' kHz'; g.fillText(t, w - g.measureText(t).width - 6, h - 6); }
+}
+// Each tick writes a band of RANG pixels (not 1): ~15 s of history on a
+// 300 px waterfall, enough to read a request and its answer.
+const RANG = 3;
+// One state per waterfall: its colour scale and its labels.
+//   - the scale follows the spectrum SLOWLY (moving average, ~3 s): recomputed
+//     at each row it jumped, and the same colour no longer meant the same level
+//     from one row to the next;
+//   - the labels are attached to the ROW where their message arrived, and drawn
+//     on the layer above (.ov) at each frame, so they flow down with it.
+const CASCADES = new WeakMap();
+function etat(c) { let e = CASCADES.get(c); if (!e) { e = { lo: null, hi: null, rangs: 0, marques: [] }; CASCADES.set(c, e); } return e; }
+// A flat spectrum is SILENCE (the pont writes zeros when nobody transmits):
+// painted dark, and it does not move the scale - stretched to 30 dB it came
+// out red, the colour of the strongest signal.
+function muet(psd) { const v = psd.filter(isFinite); if (v.length < 4) return true;
+  let lo = Infinity, hi = -Infinity; for (const x of v) { if (x < lo) lo = x; if (x > hi) hi = x; } return hi - lo < 3; }
+function traceWf(c, psd, plancher, plafond, silence) {
+  const e = etat(c), k = 0.05;
+  if (silence == null) silence = muet(psd);
+  // the scale is applied as given: fixed in manual; in auto it is already
+  // smoothed by the measures (floor average, peak-hold)
+  if (!silence) { e.lo = plancher; e.hi = plafond; }
+  const [w, h] = taille(c), g = c.getContext('2d'), rh = Math.max(1, Math.round(RANG * (window.devicePixelRatio || 1)));
+  // data-flux="haut": the new row enters at the BOTTOM and the waterfall flows
+  // up (the uplink, from the mobile towards the BTS); otherwise it enters at
+  // the top and flows down (the downlink, from the BTS towards the mobile).
+  const monte = c.dataset.flux === 'haut', y0 = monte ? h - rh : 0;
+  if (monte) g.drawImage(c, 0, rh, w, h - rh, 0, 0, w, h - rh);
+  else g.drawImage(c, 0, 0, w, h - rh, 0, rh, w, h - rh);
+  const row = g.createImageData(w, rh), n = psd.length;
+  for (let x = 0; x < w; x++) { const v = psd[Math.floor(x * n / w)];
+    const [r, gg, b] = silence || e.lo == null ? [12, 22, 70] : couleur((v - e.lo) / (e.hi - e.lo || 1));   // silence: night blue
+    for (let y = 0; y < rh; y++) row.data.set([r, gg, b, 255], (y * w + x) * 4); }
+  g.putImageData(row, 0, y0);
+  e.rangs++; e.rh = rh;
+  calque(c);
+}
+// No text on any waterfall: the messages are in the "Dialogue MS <-> BTS"
+// list. A canvas
+// with data-annote="1" would show them again on its layer.
+function annote(c, sens, liste) {   // the messages of this tick, on the row just drawn
+  if (!c.dataset.annote || !liste.length) return;
+  const e = etat(c), vus = {};
+  liste.forEach(t => vus[t] = (vus[t] || 0) + 1);                  // "X x3" rather than three times X
+  e.marques.push({ rang: e.rangs, sens, texte: Object.keys(vus).map(t => vus[t] > 1 ? t + ' ×' + vus[t] : t).join(' · ') });
+  calque(c);
+}
+function calque(c) {
+  const ov = c.parentElement && c.parentElement.querySelector('canvas.ov'); if (!ov) return;
+  const [w, h] = taille(ov), g = ov.getContext('2d'), e = etat(c), d = window.devicePixelRatio || 1, rh = e.rh || 3 * d;
+  g.clearRect(0, 0, w, h);
+  e.marques = e.marques.filter(m => (e.rangs - m.rang) * rh < h);
+  g.font = `600 ${11 * d}px "Fira Code", monospace`; g.textBaseline = 'middle';
+  let dernierY = -1e9;
+  for (let i = e.marques.length - 1; i >= 0; i--) {                // newest first: they win the room
+    const m = e.marques[i], age = (e.rangs - m.rang) * rh + rh / 2, coul = m.sens === 'UL' ? '#ff9a5c' : '#6fb6ff';
+    const y = c.dataset.flux === 'haut' ? h - age : age;             // a rising waterfall carries its labels up
+    g.fillStyle = coul; g.globalAlpha = .45; g.fillRect(0, y - d / 2, w, Math.max(1, d)); g.globalAlpha = 1;   // the instant, across
+    if (Math.abs(y - dernierY) < 16 * d) continue;                  // no overlapping labels
+    dernierY = y;
+    const t = (m.sens === 'UL' ? '↑ MS  ' : '↓ BTS  ') + m.texte, tw = Math.min(g.measureText(t).width, w - 16 * d);
+    const x = m.sens === 'UL' ? 8 * d : w - tw - 16 * d;            // MS on the left, BTS on the right
+    g.fillStyle = 'rgba(15,27,36,.88)'; g.fillRect(x - 4 * d, y - 8 * d, tw + 8 * d, 16 * d);
+    g.fillStyle = coul; g.fillRect(x - 4 * d, y - 8 * d, 3 * d, 16 * d);
+    g.fillStyle = '#fff'; g.fillText(t, x + 2 * d, y, tw);
+  }
+}
+// ── Gain and range of each waterfall, per SOURCE (kept in the browser) ──
+// DEFAULT = AUTO, measured on the signal itself:
+//   blue = the noise floor  : median of the spectrum, moving average (~3 s)
+//   red  = the useful signal: 99th percentile, peak-hold that comes down
+//          slowly (a burst of the mobile reaches red, a silence does not
+//          raise the scale); silent rows are not measured.
+// Measured on the bench during an echo test (call to 600, voice both ways):
+//   MS uplink    floor -1.7 dB (+-0.7), signal p99 34.1 dB, span 35.7 dB
+//   BTS downlink floor  4.8 dB (+-0.2), signal p99 42.9 dB, span 38.1 dB
+// a fixed 35 dB range saturated the BTS into one red. Blue sits 2 dB ABOVE
+// the median (the noise wobbles a few dB around it: no cyan specks), red at
+// the 99th percentile + 1 dB (the GMSK core red, only the peaks saturate).
+// Moving Gain or Plage switches that waterfall to manual; reset = auto.
+//   gain  : lowers the floor by that many dB -> hotter
+//   plage : dB from blue to red
+const REGLAGE_DEFAUT = { auto: true, gain: 0, plage: 30 };
+// The defaults of the sources measured on the bench = the FINAL values of the
+// auto setting (blue = floor + 2 dB -> gain -2; red = p99 + 1 dB -> range
+// p99 - floor - 1), fixed so that the scale does not drift:
+//   MS  (echo test)  floor -1.7, p99 34.1 -> range 35 dB
+//   BTS (echo test)  floor  4.8, p99 42.9 -> range 37 dB  (idle: 39 dB)
+// "auto" ticked = measured continuously again; reset = these defaults.
+// MANUAL = FIXED: blue = ref - gain, red = blue + plage, in absolute dB; ref
+// is the measured floor (here the echo test), taken once - the scale no longer
+// follows the signal. Unticking "auto" takes ref from the floor measured at
+// that moment, so the image does not jump.
+// DSP input (1 sample/symbol, +-135 kHz), measured AFTER its display smoothing
+// (LISSAGE below, 41 bins): edges ~10.5 dB, shoulders 16..27, top of the GMSK
+// bell ~32 dB, max 36. Blue at 10 dB (the edges), red at 34 dB: the whole bell
+// shows, from blue at the edges to red in the middle.
+const REGLAGES_SOURCE = {
+  ms:      { auto: false, gain: -2, plage: 35, ref: -1.7 },
+  bts:     { auto: false, gain: -2, plage: 37, ref: 4.8 },
+  'dsp-in':{ auto: false, gain: 0,  plage: 24, ref: 10 },
+};
+// Where the noise floor is read, per source: the median (MS, BTS: at 4
+// samples/symbol the signal covers ~30 % of the band), the 10th percentile for
+// the DSP input (at 1 sample/symbol the median falls inside the bell).
+const QUANTILE_PLANCHER = { 'dsp-in': 0.10 };
+// Display smoothing, per source. The DSP input is a COMB of lines (bursts end
+// to end at 1 sample/symbol, many with the same content): the bell only shows
+// on average. f = moving average over f bins (in linear power: the envelope
+// stays, the comb goes), t = weight of the new frame (moving average per bin).
+// (41 bins ~ 11 kHz: the lines of the comb are ~10 kHz apart; the bell is
+// +-100 kHz wide, it is not flattened)
+const LISSAGE = { 'dsp-in': { f: 41, t: 0.2 } };
+const LISSES = {};   // id -> Float64Array, the time average
+function lisse(id, psd) {
+  const L = LISSAGE[id]; if (!L || muet(psd)) return psd;
+  const n = psd.length, lin = psd.map(v => isFinite(v) ? Math.pow(10, v / 10) : 0), out = new Array(n), h = L.f >> 1;
+  for (let i = 0; i < n; i++) { let acc = 0, c = 0;
+    for (let j = Math.max(0, i - h); j <= Math.min(n - 1, i + h); j++) { acc += lin[j]; c++; }
+    out[i] = 10 * Math.log10(acc / c || 1e-12); }
+  let m = LISSES[id];
+  if (!m || m.length !== n) { m = LISSES[id] = Float64Array.from(out); return out; }
+  for (let i = 0; i < n; i++) { m[i] += (out[i] - m[i]) * L.t; out[i] = m[i]; }
+  return out;
+}
+const MESURES = {};   // id -> { med, crete }
+function reglage(id) {
+  const d = Object.assign({}, REGLAGE_DEFAUT, REGLAGES_SOURCE[id] || {});
+  try { return Object.assign(d, JSON.parse(localStorage.getItem('spectres.r.' + id) || '{}')); }
+  catch (e) { return d; }
+}
+function poseReglage(id, r) { localStorage.setItem('spectres.r.' + id, JSON.stringify(r)); }
+function mesure(id, psd) {   // updates the floor / signal statistics of a source
+  if (muet(psd)) return MESURES[id];
+  const v = Float64Array.from(psd.filter(isFinite)).sort(); if (!v.length) return MESURES[id];
+  const med = v[Math.floor(v.length * (QUANTILE_PLANCHER[id] || .5))], p99 = v[Math.floor(v.length * .99)];
+  const m = MESURES[id];
+  if (!m) return MESURES[id] = { med, crete: p99 };
+  m.med += (med - m.med) * 0.05;
+  m.crete = p99 > m.crete ? p99 : m.crete - Math.min(0.05, m.crete - p99);   // peak-hold, -0.05 dB/frame
+  return m;
+}
+function dessineReglages(div, id, sens) {
+  if (!div) return;
+  const r = reglage(id), m = MESURES[id];
+  const plage = r.auto ? (m ? Math.max(12, Math.round(m.crete - m.med - 1)) : r.plage) : r.plage;
+  const cle = id + '|' + r.auto + '|' + r.gain + '|' + plage;
+  if (div.dataset.cle === cle) return;
+  if (div.contains(document.activeElement)) return;               // do not redraw under the mouse
+  div.dataset.cle = cle;
+  div.innerHTML = `<label title="Bleu = plancher de bruit, rouge = signal utile, mesures en continu"><input type="checkbox" data-k="auto" ${r.auto ? 'checked' : ''}> auto</label>
+    <label>Gain <input type="range" min="-20" max="30" step="1" value="${r.gain}" data-k="gain"><b>${r.gain > 0 ? '+' : ''}${r.gain} dB</b></label>
+    <label>Plage <input type="range" min="6" max="80" step="1" value="${plage}" data-k="plage"><b>${plage} dB</b></label>
+    <button title="Retour au reglage automatique">↺</button>`;
+  div.oninput = e => { const k = e.target.dataset.k; if (!k) return; const r2 = reglage(id);
+    // switching to manual: the reference floor is the one measured now, fixed
+    const figer = () => { if (r2.ref == null && MESURES[id]) r2.ref = Math.round(MESURES[id].med * 10) / 10; };
+    if (k === 'auto') { r2.auto = e.target.checked; if (!r2.auto) figer(); }
+    else { r2[k] = +e.target.value; if (k === 'plage') { r2.auto = false; figer(); }
+      e.target.nextElementSibling.textContent = (k === 'gain' && r2.gain > 0 ? '+' : '') + r2[k] + ' dB'; }
+    poseReglage(id, r2); };
+  div.onchange = div.oninput;
+  div.querySelector('button').onclick = () => { localStorage.removeItem('spectres.r.' + id); div.dataset.cle = ''; dessineReglages(div, id, sens); };
+}
+// Data and colour scale of one row of a waterfall (view: level).
+function rangee(id, sens, psd) { return [psd, ...echelle(id, psd)]; }
+// The colour scale of a waterfall.
+function echelle(id, psd) {
+  const r = reglage(id), m = mesure(id, psd);
+  if (r.auto && m) { const lo = m.med + 2 - r.gain; return [lo, Math.max(lo + 12, m.crete + 1 - r.gain)]; }
+  // manual: a FIXED scale (no dynamic gain), around the reference floor
+  const ref = r.ref != null ? r.ref : (m ? m.med : bornes(psd)[0]);
+  const lo = ref - r.gain;
+  return [lo, lo + r.plage];
+}
+
+// dB range of a spectrum, the DEFAULT setting of every waterfall:
+//   floor   = the median level (the noise floor) -> blue
+//   ceiling = the peak                           -> red
+// at least 20 dB apart, so that noise alone is not stretched into colours.
+function bornes(psd) { const s = Float64Array.from(psd.filter(isFinite)).sort();
+  if (!s.length) return [-100, 0];
+  const hi = s[s.length - 1] + 1, lo = Math.min(s[Math.floor(s.length * .5)], hi - 20);
+  return [lo, hi]; }
+
+// ── the chain ──
+// Sources only offered in the comparison selectors (no place of their own in
+// the chain, no card): the DSP input is chosen as B, the downlink side.
+const SELECTEUR_SEUL = ['dsp-in'];
+function dessineChaine() {
+  const par = {}; SOURCES.filter(s => !SELECTEUR_SEUL.includes(s.id)).forEach(s => (par[s.niveau] = par[s.niveau] || []).push(s));
+  $('#chaine').innerHTML = Object.keys(par).map(n => `<div class="niveau"><h3><span class="num">${n}</span>${esc(NIVEAUX[n].titre)}</h3>
+      <div class="aide">${esc(NIVEAUX[n].aide)}</div>
+      ${(par[n] || []).map(s => `<div class="src ${[$('#cA').value, $('#cB').value].includes(s.id) ? 'on' : ''}" data-id="${esc(s.id)}" title="${esc(s.aide + '\n' + s.producteur + '\n' + s.chemin)}">
+        <span class="pt ${s.actif ? 'actif' : s.present ? 'present' : ''}"></span><span class="sens ${esc(s.sens)}">${esc(s.sens)}</span>
+        <span>${esc(s.label.replace(/\s*\(.*\)$/, ''))}</span><small>${s.actif ? 'actif' : s.present ? 'présent' : 'absent'}</small></div>`).join('')}</div>`).join('');
+  // A = the uplink side, B = the downlink side (pont relay or DSP input)
+  const opt = s => `<option value="${esc(s.id)}">${esc(s.sens + ' · ' + s.label.replace(/\s*\(.*\)$/, '') + (s.present ? '' : ' (absent)'))}</option>`;
+  const optsA = SOURCES.filter(s => s.sens === 'UL').map(opt).join(''), optsB = SOURCES.filter(s => s.sens === 'DL').map(opt).join('');
+  ['#cA', '#cB'].forEach((sel, i) => { const v = $(sel).value || localStorage.getItem('spectres.' + sel) || ''; $(sel).innerHTML = i === 0 ? optsA : optsB;
+    // default: the mobile (uplink) against the BTS (downlink)
+    $(sel).value = v || (i === 0 ? 'ms' : 'bts');
+    if (!$(sel).value) $(sel).value = i === 0 ? 'ms' : 'bts'; });
+}
+// A source of the chain goes into the comparison: A if it rises, B if it falls.
+// (No separate card: every signal is shown once, in the comparison.)
+$('#chaine').addEventListener('click', e => {
+  const it = e.target.closest('[data-id]'); if (!it) return;
+  const s = SOURCES.find(x => x.id === it.dataset.id); if (!s) return;
+  const sel = s.sens === 'UL' ? '#cA' : '#cB';
+  $(sel).value = s.id; localStorage.setItem('spectres.' + sel, s.id); dessineChaine();
+});
+function dessineGrille() {}   // no separate cards any more: the comparison only
+
+['#cA', '#cB'].forEach(sel => $(sel).addEventListener('change', () => {
+  localStorage.setItem('spectres.' + sel, $(sel).value); dessineChaine(); }));
+
+// ── polling ──
+async function sources() {
+  try { const r = await (await fetch('/api/fft/sources', { cache: 'no-store' })).json();
+    SOURCES = r.sources; NIVEAUX = r.niveaux;
+    dessineChaine(); } catch (e) {}
+}
+async function tic() {
+  for (const id of affichees) {
+    const c = document.getElementById('sp-' + id); if (!c) continue;   // (A and B have no card: drawn by compare)
+    try {
+      const r = await (await fetch('/psd?src=' + encodeURIComponent(id), { cache: 'no-store' })).json();
+      const err = c.querySelector('.err');
+      if (r.error) { err.textContent = r.error; delete derniers[id]; continue; }
+      err.textContent = ''; derniers[id] = r;
+      const s = SOURCES.find(x => x.id === id) || {}, [lo, hi] = bornes(r.psd);
+      tracePsd(c.querySelector('.psd'), r.freqs, r.psd, s.sens === 'UL' ? '#ff9a5c' : '#6fb6ff', lo, hi);
+      traceWf(c.querySelector('.wf'), ...rangee(id, s.sens, r.psd));
+      dessineReglages(c.querySelector('.reglages'), id, s.sens);
+      annote(c.querySelector('.wf'), s.sens, marques[s.sens] || []);
+    } catch (e) {}
+  }
+  await compare();
+  marques.UL = []; marques.DL = [];
+  setTimeout(tic, document.hidden ? 1000 : 150);
+}
+async function compare() {
+  const a = $('#cA').value, b = $('#cB').value;
+  const nom = id => { const x = SOURCES.find(s => s.id === id); return x ? x.sens + ' · ' + x.label.replace(/\s*\(.*\)$/, '') : id; };
+  $('#tA').textContent = 'A : ' + nom(a); $('#tB').textContent = 'B : ' + nom(b);
+  if (!a || !b || a === b) { $('#dErr').textContent = 'choisis deux sources différentes'; return; }
+  // A and B have no card of their own: the comparison reads them, both in the same
+  // tick, so that one row of the two waterfalls is the same instant.
+  const lus = await Promise.all([a, b].map(id => fetch('/psd?src=' + encodeURIComponent(id), { cache: 'no-store' })
+    .then(r => r.json()).catch(e => ({ error: String(e) }))));
+  [a, b].forEach((id, i) => { if (lus[i].error) delete derniers[id]; else derniers[id] = lus[i]; });
+  let A = derniers[a], B = derniers[b];
+  if (A) A = Object.assign({}, A, { psd: lisse(a, A.psd) });
+  if (B) B = Object.assign({}, B, { psd: lisse(b, B.psd) });
+  if (!A || !B) { $('#dErr').textContent = (A ? 'B' : 'A') + ' ne produit rien : ' + nom(A ? b : a) + ' — ' + (lus[A ? 1 : 0].error || ''); return; }
+  // Each on its OWN dB scale: the downlink is far stronger than the uplink, a
+  // common scale flattened the mobile to the floor and hid its bursts.
+  const [la, ha] = bornes(A.psd), [lb, hb] = bornes(B.psd);
+  const sa = SOURCES.find(s => s.id === a) || {}, sb = SOURCES.find(s => s.id === b) || {};
+  $('#tA').textContent = (sa.sens === 'UL' ? '↑ ' : '↓ ') + nom(a); $('#tB').textContent = (sb.sens === 'UL' ? '↑ ' : '↓ ') + nom(b);
+  dessineReglages(document.querySelector('.reglages[data-col="a"]'), a, sa.sens);
+  dessineReglages(document.querySelector('.reglages[data-col="b"]'), b, sb.sens);
+  // one scale per source and per frame, shared by its side waterfall and its
+  // half of the middle (echelle() also updates the measures: called once)
+  const ra = rangee(a, sa.sens, A.psd), rb = rangee(b, sb.sens, B.psd);
+  tracePsd($('#aPsd'), A.freqs, A.psd, sa.sens === 'UL' ? '#ff9a5c' : '#6fb6ff', la, ha); traceWf($('#aWf'), ...ra);
+  tracePsd($('#bPsd'), B.freqs, B.psd, sb.sens === 'UL' ? '#ff9a5c' : '#6fb6ff', lb, hb); traceWf($('#bWf'), ...rb);
+  // the middle: the downlink falls from the top, the uplink rises from the bottom
+  const dl = sa.sens === 'DL' ? ra : rb, ul = sa.sens === 'UL' ? ra : rb;
+  traceWf($('#mDl'), ...dl); traceWf($('#mUl'), ...ul);
+  annote($('#mDl'), 'DL', marques.DL || []); annote($('#mUl'), 'UL', marques.UL || []);
+  annote($('#aWf'), sa.sens, marques[sa.sens] || []); annote($('#bWf'), sb.sens, marques[sb.sens] || []);
+  const sec = Math.floor(Date.now() / 1000);
+  if (sec !== compare.sec) { compare.sec = sec;
+    for (const c of [$('#aWf'), $('#bWf'), $('#mDl'), $('#mUl')]) { const g = c.getContext('2d'), d = window.devicePixelRatio || 1;
+      g.fillStyle = '#fff'; g.fillRect(0, c.dataset.flux === 'haut' ? c.height - Math.max(1, d) : 0, 10 * d, Math.max(1, d)); } }
+  $('#dErr').textContent = '';
+}
+
+// ── the radio messages on the waterfalls ──
+// UL (the mobile sends) is written on the waterfalls of the UL sources, DL
+// (the BTS answers) on the DL ones, at the row where it arrives: the mark then
+// flows down with the spectrum it belongs to.
+const marques = { UL: [], DL: [] };
+function nomMessage(p) {
+  return (p.rr || p.cc || p.l3 || p.info || p.protocol || '?').replace(/\s+/g, ' ').slice(0, 42);
+}
+function radio(p) {   // the Um messages (GSMTAP), not the SS7/SIP of the core
+  return /gsmtap|lapdm|rr|mm|cc|sms|dtap/i.test((p.protocol || '') + ' ' + (p.l2 || '')) && !/sctp|m3ua|sip|rtp/i.test(p.protocol || '');
+}
+// The background the network repeats all the time (system information,
+// measurements, paging, LAPDm acknowledgements): it hides the exchanges.
+const FOND = /MEAS(UREMENT)?[ _]?REP|SYSTEM[ _]INFO|\bSI ?\d|PAGING[ _]REQ|^S, |\bRR, N\(R\)|func=RR|func=RNR|\bUI\b|DUMMY|IDLE|^[IS]\b.*N\(R\)/i;
+window.addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data || e.data.type !== 'paquet' || !$('#annoter').checked) return;
+  const p = e.data.p, sens = p.direction === 'UL' ? 'UL' : 'DL';
+  if (!radio(p)) return;
+  const nom = nomMessage(p), fond = FOND.test(nom + ' ' + (p.l2 || ''));
+  if (fond && !$('#fond').checked) return;
+  marques[sens].push(nom);
+  const d = $('#dialogue'); if (d.querySelector('.aide')) d.innerHTML = '';
+  const div = document.createElement('div'); div.className = 'm ' + sens;
+  div.textContent = (sens === 'UL' ? 'MS → ' : '← BTS ') + nom; div.title = (typeof p.ts === 'number' ? p.ts.toFixed(3) + ' s  ' : '') + (p.info || '');
+  d.appendChild(div); while (d.children.length > 80) d.removeChild(d.firstChild);
+  d.scrollTop = d.scrollHeight;
+});
+$('#annoter').addEventListener('change', e => { try { parent.postMessage({ type: 'capture', on: e.target.checked }, location.origin); } catch (er) {} });
+if ($('#annoter').checked) { try { parent.postMessage({ type: 'capture', on: true }, location.origin); } catch (er) {} }
+
+// ── logs ──
+async function logs() {
+  if (!document.querySelector('details').open) return;
+  for (const [el, w] of [['#lMs', 'ms'], ['#lBts', logBts]]) {
+    try { const r = await (await fetch('/logtail?which=' + w, { cache: 'no-store' })).json();
+      const p = $(el), bas = p.scrollTop + p.clientHeight >= p.scrollHeight - 20;
+      p.textContent = (r.error || r.text || '').replace(/\x1b\[[0-9;]*m/g, '').split('\n').slice(-300).join('\n');
+      if (bas) p.scrollTop = p.scrollHeight; } catch (e) {}
+  }
+}
+document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => {
+  logBts = b.dataset.l; document.querySelectorAll('[data-l]').forEach(x => x.classList.toggle('on', x === b)); logs(); });
+
+sources(); setInterval(sources, 3000); setTimeout(tic, 300); setInterval(logs, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>osmo-operator · Configuration du banc</title>
+<style>
+  /* Light pages, dark where it matters (bar, code, selected items) - same
+     palette as theme.css of the console. */
+  :root {
+    --bg0:#eef1f5; --bg1:#ffffff; --bg2:#f4f6f9; --bg3:#e7ebf1; --ligne:#dde2ea;
+    --t0:#0f1b24; --t1:#22313d; --t2:#56636e; --t3:#8793a0;
+    --ink:#0f1b24; --ink2:#172733; --ink3:#22394a; --inkt:#e3ebf1; --inkt2:#9fb3c2;
+    --bleu:#1f6fb8; --cyan:#0d8a82; --vert:#2f7d32; --jaune:#9a7400; --orange:#c0501a; --rouge:#c62828; --violet:#5c5fb8;
+    --r:12px; --ombre:0 4px 18px rgba(15,27,36,.10);
+    --mono:"Fira Code","JetBrains Mono",ui-monospace,monospace;
+    --sans:"Source Sans 3","Inter",system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg0); color:var(--t1); font:15px/1.45 var(--sans); }
+  a { color:var(--bleu); }
+  button,select,input,textarea { font:inherit; color:inherit; }
+
+  /* ── barre du haut ── */
+  header { position:sticky; top:0; z-index:20; background:#fff; color:var(--t1); border-bottom:1px solid var(--ligne); box-shadow:0 1px 8px rgba(15,27,36,.06); }
+  .barre { display:flex; flex-wrap:wrap; align-items:center; gap:.75rem 1.25rem; padding:.9rem 1.25rem; min-height:64px; max-width:1600px; margin:auto; }
+  .marque { display:flex; align-items:center; gap:.6rem; font-weight:700; color:var(--ink); font-size:1.1rem; text-decoration:none; }
+  .marque .logo { width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+                  background:var(--ink); color:#fff; font-size:.72rem; }
+  .marque small { color:var(--t3); font-weight:500; }
+  .banc { margin-left:auto; display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; }
+  .pastille { display:inline-flex; align-items:center; gap:.45rem; padding:.35rem .85rem; border-radius:999px; background:var(--bg2); border:1px solid var(--ligne); color:var(--t1); font-weight:600; }
+  .pastille i { width:10px; height:10px; border-radius:50%; background:var(--t3); box-shadow:0 0 0 3px rgba(255,255,255,.04); }
+  .pastille.actif i { background:var(--vert); box-shadow:0 0 10px var(--vert); }
+  .pastille.arret i { background:var(--rouge); }
+  .btn { border:1px solid var(--ligne); background:var(--bg2); padding:.45rem .9rem; border-radius:9px; cursor:pointer; font-weight:600; transition:.15s; }
+  .btn:hover { background:var(--bg3); }
+  .btn.go { background:var(--ink) !important; border-color:var(--ink) !important; color:#fff !important; }
+  .btn.stop { background:#fff !important; border-color:#e6b4b1 !important; color:var(--rouge) !important; }
+  .btn.petit { padding:.2rem .55rem; font-size:.85rem; }
+  .btn:disabled { opacity:.5; cursor:wait; }
+  .case { display:inline-flex; align-items:center; gap:.35rem; color:var(--t2); font-size:.9rem; }
+  header .case { color:var(--t2); }
+  nav.onglets { display:flex; gap:.25rem; overflow-x:auto; padding:0 1.25rem; max-width:1600px; margin:auto; scrollbar-width:none; }
+  nav.onglets button { border:0; background:none; padding:.65rem 1rem; color:var(--t2); font-weight:600; border-bottom:3px solid transparent; cursor:pointer; white-space:nowrap; }
+  nav.onglets button.on { color:var(--ink); border-color:var(--ink); }
+  nav.onglets .compte { margin-left:.35rem; font-size:.75rem; padding:.05rem .45rem; border-radius:999px; background:var(--rouge); color:#fff; }
+
+  main { max-width:1600px; margin:auto; padding:1.25rem; }
+  section { display:none; }
+  section.on { display:block; }
+  @keyframes apparait { from { opacity:0; transform:translateY(4px); } }
+  h2 { margin:.2rem 0 1rem; font-size:1.25rem; color:var(--t0); display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+  h3 { margin:.2rem 0 .6rem; color:var(--t0); font-size:1.05rem; }
+
+  /* ── segment (MS / BTS) ── */
+  .segment { display:inline-flex; background:var(--bg2); border-radius:10px; padding:3px; }
+  .segment button { border:0; background:none; padding:.35rem 1.1rem; border-radius:8px; cursor:pointer; font-weight:700; color:var(--t2); }
+  .segment button.on { background:var(--bleu); color:#fff; }
+
+  /* ── maître / détail ── */
+  .md { display:grid; grid-template-columns:minmax(260px,360px) 1fr; gap:1rem; align-items:start; }
+  .liste { display:flex; flex-direction:column; gap:.5rem; max-height:calc(100vh - 220px); overflow:auto; padding-right:.25rem; }
+  .item { background:var(--bg1); border:1px solid var(--ligne); border-radius:var(--r); padding:.7rem .85rem; cursor:pointer; transition:.12s; }
+  .item:hover { border-color:var(--bleu); }
+  .item.on { background:var(--ink); border-color:var(--ink); }
+  .item.on .titre { color:#fff; } .item.on .sous { color:var(--inkt2); }
+  .item .titre { font-weight:700; color:var(--t0); display:flex; justify-content:space-between; gap:.5rem; }
+  .item .sous { color:var(--t2); font-size:.88rem; font-family:var(--mono); }
+  .carte { background:var(--bg1); border:1px solid var(--ligne); border-radius:var(--r); padding:1rem 1.1rem; box-shadow:var(--ombre); }
+  .vide { color:var(--t3); padding:2rem; text-align:center; }
+
+  .champs { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:.6rem; margin:.4rem 0 1rem; }
+  .champ { background:var(--bg2); border-radius:10px; padding:.5rem .7rem; }
+  .champ b { display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--t3); font-weight:700; }
+  .champ span { font-family:var(--mono); color:var(--t0); word-break:break-all; }
+  .badge { font-size:.75rem; padding:.1rem .5rem; border-radius:999px; background:var(--bg3); color:var(--t2); font-weight:700; white-space:nowrap; }
+  .badge.ok { background:rgba(133,153,0,.2); color:var(--vert); }
+  .badge.ko { background:var(--rouge); color:#fff; }
+  .badge.info { background:rgba(38,139,210,.2); color:var(--bleu); }
+  .alerte { border-left:4px solid var(--rouge); background:#fdecea; color:#7f1d1d; padding:.5rem .75rem; border-radius:8px; margin:.4rem 0; }
+  .alerte small { color:var(--t3); display:block; }
+  .ok-txt { color:var(--vert); }
+  pre, .code, textarea#fTexte { font-family:var(--mono); font-size:.85rem; background:var(--ink) !important; color:var(--inkt) !important; border:1px solid var(--ink3); border-radius:10px; padding:.75rem; overflow:auto; max-height:60vh; margin:0; white-space:pre; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--ligne); vertical-align:top; }
+  th { color:var(--t3); font-weight:700; font-size:.78rem; text-transform:uppercase; }
+  td.mono { font-family:var(--mono); }
+
+  /* ── core ── */
+  .grille { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:1rem; }
+  .demon .entete { display:flex; align-items:center; gap:.6rem; justify-content:space-between; }
+  .demon .nom { font-weight:800; color:var(--t0); font-size:1.05rem; }
+  .point { width:11px; height:11px; border-radius:50%; background:var(--t3); display:inline-block; }
+  .point.on { background:var(--vert); box-shadow:0 0 8px var(--vert); }
+  .cles { font-family:var(--mono); font-size:.82rem; color:var(--t1); margin-top:.5rem; max-height:180px; overflow:auto; }
+  .cles div { padding:.1rem 0; border-bottom:1px dashed rgba(255,255,255,.04); }
+  .cles em { color:var(--t3); font-style:normal; }
+
+  /* ── paramètres ── */
+  .outils { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin-bottom:1rem; }
+  input[type=search], input[type=text], select, textarea { background:var(--bg2); border:1px solid var(--ligne); border-radius:9px; padding:.45rem .65rem; outline:none; }
+  input:focus, select:focus, textarea:focus { border-color:var(--bleu); }
+  details.section { background:var(--bg1); border:1px solid var(--ligne); border-radius:var(--r); margin-bottom:.75rem; }
+  details.section > summary { cursor:pointer; padding:.75rem 1rem; font-weight:700; color:var(--t0); list-style:none; display:flex; justify-content:space-between; }
+  details.section > summary::after { content:"▾"; color:var(--t3); }
+  details.section[open] > summary::after { content:"▴"; }
+  .param { display:grid; grid-template-columns:minmax(150px,240px) 1fr auto; gap:.4rem 1rem; align-items:center; padding:.6rem 1rem; border-top:1px solid var(--ligne); }
+  .param .cle { font-family:var(--mono); font-weight:700; color:var(--t0); }
+  .param .aide { grid-column:1 / -1; color:var(--t3); font-size:.85rem; white-space:pre-line; margin-top:-.2rem; }
+  .param input, .param select { width:100%; }
+  .param.modifie .cle::after { content:" ●"; color:var(--jaune); }
+  .bas { display:flex; gap:.4rem; }
+
+  /* ── notifications ── */
+  #toast { position:fixed; right:1rem; bottom:1rem; display:flex; flex-direction:column; gap:.5rem; z-index:50; }
+  #toast div { background:var(--bg2); border:1px solid var(--ligne); border-left:4px solid var(--cyan); padding:.6rem .9rem; border-radius:10px; box-shadow:var(--ombre); max-width:420px; animation:apparait .2s; }
+  #toast div.ko { border-left-color:var(--rouge); }
+
+  @media (max-width: 900px) {
+    .md { grid-template-columns:1fr; }
+    .liste { max-height:none; flex-direction:row; overflow-x:auto; padding-bottom:.25rem; }
+    .liste .item { min-width:220px; }
+    .param { grid-template-columns:1fr; }
+    .banc { margin-left:0; width:100%; }
+    main { padding:.75rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="barre">
+    <a class="marque" href="/"><span class="logo">GSM</span> osmo_egprs <small>configuration du banc · ← console</small></a>
+    <div class="banc">
+      <span id="etat" class="pastille"><i></i><span>…</span></span>
+      <label class="case" title="Comme start.sh --configure : les configurations derivees (osmo-bsc.cfg, mobiles...) sont reecrites depuis globals.conf"><input type="checkbox" id="regen"> régénérer les configs</label>
+      <button class="btn go" id="bStart">Démarrer</button>
+      <button class="btn stop" id="bStop">Arrêter</button>
+    </div>
+  </div>
+  <nav class="onglets" id="onglets">
+    <button data-o="core" class="on">Core</button>
+    <button data-o="ran">RAN</button>
+    <button data-o="params">Paramètres</button>
+    <button data-o="fichiers">Fichiers</button>
+    <button data-o="coherence">Cohérence <span class="compte" id="nKo" hidden></span></button>
+    <button data-o="historique">Historique</button>
+    <button data-o="journal">Journal</button>
+  </nav>
+</header>
+
+<main>
+  <section id="core" class="on">
+    <h2>Cœur de réseau <span class="badge info" id="coreFichier"></span></h2>
+    <div class="grille" id="coreGrille"></div>
+    <div class="carte" id="coreDetail" style="margin-top:1rem" hidden></div>
+  </section>
+
+  <section id="ran">
+    <h2>Réseau d'accès
+      <span class="segment" id="seg"><button data-s="ms" class="on">MS</button><button data-s="bts">BTS</button></span>
+    </h2>
+    <div class="md">
+      <div class="liste" id="ranListe"></div>
+      <div class="carte" id="ranDetail"><div class="vide">Choisis un élément</div></div>
+    </div>
+  </section>
+
+  <section id="params">
+    <h2>Paramètres du banc <span class="badge" id="gcPath"></span></h2>
+    <div class="outils">
+      <input type="search" id="pFiltre" placeholder="Filtrer (MCC, ARFCN, KI…)" style="flex:1;min-width:220px">
+      <label class="case"><input type="checkbox" id="pLanceur"> variables du lanceur</label>
+      <label class="case"><input type="checkbox" id="pModif"> seulement les modifiées</label>
+    </div>
+    <div id="pListe"></div>
+  </section>
+
+  <section id="fichiers">
+    <h2>Fichiers de configuration suivis <span class="badge" id="fCompte"></span></h2>
+    <div class="md">
+      <div>
+        <input type="search" id="fFiltre" placeholder="Filtrer les chemins" style="width:100%;margin-bottom:.5rem">
+        <div class="liste" id="fListe"></div>
+      </div>
+      <div class="carte" id="fDetail"><div class="vide">Choisis un fichier</div></div>
+    </div>
+  </section>
+
+  <section id="coherence">
+    <h2>Cohérence entre les configurations <span class="badge info">règles SQL (table regle)</span></h2>
+    <div id="cListe"></div>
+  </section>
+
+  <section id="historique">
+    <h2>Historique des changements</h2>
+    <div class="carte" style="overflow:auto"><table id="hTable"></table></div>
+  </section>
+
+  <section id="journal">
+    <h2>Journal du démarrage <button class="btn petit" id="jMaj">Rafraîchir</button></h2>
+    <pre id="jTexte">…</pre>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+'use strict';
+window.addEventListener('error', e => { const d = document.createElement('pre'); d.textContent = 'Erreur : ' + e.message + ' (' + e.lineno + ')'; document.body.prepend(d); });
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const S = { etat: null, ran: null, core: null, banc: null, seg: 'ms', choixRan: {}, fichier: null };
+
+function toast(msg, ko) {
+  const d = document.createElement('div'); d.className = ko ? 'ko' : ''; d.textContent = msg;
+  $('#toast').appendChild(d); setTimeout(() => d.remove(), ko ? 9000 : 4000);
+}
+async function api(url, corps) {
+  const r = await fetch(url, corps ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corps) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erreur || ('HTTP ' + r.status));
+  return j;
+}
+const champ = (k, v) => `<div class="champ"><b>${esc(k)}</b><span>${v == null || v === '' ? '<span style="color:var(--t3)">—</span>' : esc(v)}</span></div>`;
+const alertes = l => (l || []).length ? l.map(v => `<div class="alerte">${esc(v.message)}<small>${esc(v.titre || v.regle)} · ${esc(v.fichier)}</small></div>`).join('')
+                                     : '<div class="ok-txt">✓ cohérent</div>';
+
+// ── onglets ──
+$('#onglets').addEventListener('click', e => {
+  const b = e.target.closest('button[data-o]'); if (!b) return;
+  $$('#onglets button').forEach(x => x.classList.toggle('on', x === b));
+  $$('main section').forEach(s => s.classList.toggle('on', s.id === b.dataset.o));
+  history.replaceState(null, '', '#/' + b.dataset.o);   // '#/x': no element id, no jump
+  if (b.dataset.o === 'journal') chargeJournal();
+});
+if (location.hash) { const b = $(`#onglets button[data-o="${location.hash.replace(/^#\/?/, '')}"]`); if (b) b.click(); }
+
+// ── banc ──
+async function chargeBanc() {
+  try {
+    const b = S.banc = await api('/api/banc');
+    const p = $('#etat'); p.className = 'pastille ' + (b.actif ? 'actif' : 'arret');
+    const n = Object.keys(b.processus).length;
+    p.querySelector('span').textContent = b.actif ? `banc actif · ${n} processus` : 'banc arrêté';
+    p.title = b.commande || '';
+    if (S.core) dessineCore();
+  } catch (e) { $('#etat span').textContent = 'état inconnu'; }
+}
+// Start / stop: confirmed before, and VERIFIED after on the real state (the
+// page polls /api/banc until it has changed), not just "request sent".
+async function attendreBanc(veutActif, maxS) {
+  const t0 = Date.now(); let b = null;
+  while (Date.now() - t0 < maxS * 1000) {
+    try { b = await api('/api/banc'); } catch (e) {}
+    const n = b ? Object.keys(b.processus || {}).length : 0;
+    $('#etat span').textContent = (veutActif ? 'démarrage… ' : 'arrêt… ') + n + ' proc. · ' + Math.round((Date.now() - t0) / 1000) + ' s';
+    if (b && (veutActif ? (b.actif && n >= 8) : n === 0)) return b;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return b;
+}
+$('#bStart').onclick = async () => {
+  const regen = $('#regen').checked;
+  if (!confirm(regen ? 'Démarrer le banc en RÉGÉNÉRANT les configurations (comme start.sh --configure) : osmo-bsc.cfg, les mobiles... sont réécrits depuis globals.conf. Continuer ?'
+                     : 'Démarrer le banc (start.sh --config) ?')) return;
+  $('#bStart').disabled = true;
+  try {
+    const r = await api('/api/banc/start', { regen });
+    toast('Démarrage lancé : ' + r.lance + (r.regen ? ' (régénération)' : ''));
+    const e = await attendreBanc(true, 120), n = e ? Object.keys(e.processus || {}).length : 0;
+    if (e && e.actif && n >= 8) toast('✓ Banc démarré : ' + n + ' processus');
+    else { let j = {}; try { j = await api('/api/banc/journal'); } catch (x) {}
+      toast('✗ Le banc ne démarre pas (' + n + ' processus après 2 min) — ' + String(j.texte || '').trim().split('\n').slice(-3).join(' / '), true); }
+  } catch (e) { toast('✗ ' + e.message, true); }
+  finally { $('#bStart').disabled = false; chargeBanc(); }
+};
+$('#bStop').onclick = async () => {
+  if (!confirm('Arrêter le banc (start.sh --stop) ?')) return;
+  $('#bStop').disabled = true;
+  try {
+    await api('/api/banc/stop', {});
+    const e = await attendreBanc(false, 30), reste = e ? Object.keys(e.processus || {}) : ['?'];
+    if (!reste.length) toast('✓ Banc arrêté'); else toast('✗ Encore en vie après l\'arrêt : ' + reste.join(', '), true);
+  } catch (e) { toast('✗ Arrêt en échec : ' + e.message, true); }
+  finally { $('#bStop').disabled = false; chargeBanc(); }
+};
+
+// ── core ──
+function dessineCore() {
+  const pr = (S.banc && S.banc.processus) || {};
+  $('#coreGrille').innerHTML = S.core.core.map(c => `
+    <div class="carte demon item" data-c="${esc(c.id)}">
+      <div class="entete"><span class="nom"><span class="point ${pr[c.processus] ? 'on' : ''}" title="${pr[c.processus] ? 'pid ' + pr[c.processus].join(', ') : 'arrêté'}"></span> ${esc(c.titre)}</span>
+        ${c.incoherences.length ? `<span class="badge ko">${c.incoherences.length} ⚠</span>` : '<span class="badge ok">ok</span>'}</div>
+      <div style="color:var(--t2);font-size:.9rem">${esc(c.role)} · <span class="mono" style="font-family:var(--mono)">${esc(c.fichier.split('/').pop())}</span></div>
+      <div class="cles">${c.cles.slice(0, 14).map(k => `<div>${k.noeud ? `<em>${esc(k.noeud)} › </em>` : ''}${esc(k.texte)}</div>`).join('')}</div>
+    </div>`).join('') || '<div class="vide">Aucune configuration du cœur trouvée</div>';
+}
+$('#coreGrille').addEventListener('click', async e => {
+  const it = e.target.closest('[data-c]'); if (!it) return;
+  const c = S.core.core.find(x => x.id === it.dataset.c);
+  const f = await api('/api/conf/fichier?chemin=' + encodeURIComponent(c.fichier));
+  const d = $('#coreDetail'); d.hidden = false;
+  d.innerHTML = `<h3>${esc(c.titre)} — ${esc(c.fichier)}</h3>${alertes(c.incoherences)}
+    <p><button class="btn petit" onclick="ouvreFichier('${esc(c.fichier)}')">Ouvrir / modifier le fichier</button></p>
+    <pre>${esc(f.contenu)}</pre>`;
+  d.scrollIntoView({ behavior: 'smooth' });
+});
+
+// ── RAN ──
+$('#seg').addEventListener('click', e => {
+  const b = e.target.closest('button[data-s]'); if (!b) return;
+  S.seg = b.dataset.s; $$('#seg button').forEach(x => x.classList.toggle('on', x === b)); dessineRan();
+});
+function dessineRan() {
+  if (!S.ran) return;
+  const l = S.seg === 'ms' ? S.ran.ms : S.ran.bts;
+  const cle = S.seg === 'ms' ? 'imsi' : 'id';
+  if (S.choixRan[S.seg] == null && l.length) S.choixRan[S.seg] = l[0][cle];
+  $('#ranListe').innerHTML = l.map(x => S.seg === 'ms' ? `
+    <div class="item ${x.imsi === S.choixRan.ms ? 'on' : ''}" data-k="${esc(x.imsi)}">
+      <div class="titre"><span>${esc(x.msisdn || '—')}</span>${x.incoherences.length ? '<span class="badge ko">⚠</span>' : x.hlr ? '<span class="badge ok">HLR</span>' : '<span class="badge ko">hors HLR</span>'}</div>
+      <div class="sous">${esc(x.imsi)}</div><div class="sous">${x.mobiles.length} config(s) mobile</div></div>` : `
+    <div class="item ${x.id === S.choixRan.bts ? 'on' : ''}" data-k="${esc(x.id)}">
+      <div class="titre"><span>BTS ${esc(x.id)}</span>${x.incoherences.length ? '<span class="badge ko">⚠</span>' : '<span class="badge ok">ok</span>'}</div>
+      <div class="sous">${esc(x.bande)} · ARFCN ${esc(x.arfcn)}</div><div class="sous">LAC ${esc(x.lac)} · BSIC ${esc(x.bsic)} · ${esc(x.unit_id)}</div></div>`
+  ).join('') || '<div class="vide">Rien</div>';
+  const x = l.find(y => String(y[cle]) === String(S.choixRan[S.seg]));
+  $('#ranDetail').innerHTML = !x ? '<div class="vide">Choisis un élément</div>' : S.seg === 'ms' ? `
+    <h3>Abonné ${esc(x.msisdn || '')} <span class="badge ${x.hlr ? 'ok' : 'ko'}">${x.hlr ? 'dans le HLR' : 'absent du HLR'}</span></h3>
+    <div class="champs">${champ('IMSI', x.imsi)}${champ('MSISDN', x.msisdn)}${champ('Algorithme', x.algo)}${champ('Ki (HLR)', x.ki)}</div>
+    <h3>Incohérences</h3>${alertes(x.incoherences)}
+    <h3 style="margin-top:1rem">Configurations mobile</h3>
+    ${x.mobiles.map(m => `<div class="carte" style="box-shadow:none;margin-bottom:.6rem">
+        <div style="display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap"><b style="font-family:var(--mono)">${esc(m.fichier)}</b>
+        <button class="btn petit" onclick="ouvreFichier('${esc(m.fichier)}')">Ouvrir</button></div>
+        <div class="champs">${champ('stick (ARFCN)', m.stick)}${champ('VTY', m.vty)}${champ('layer2-socket', m.layer2_socket)}${champ('SIM', m.sim)}
+        ${champ('IMEI', m.imei)}${champ('rplmn', m.rplmn)}${champ('Ki (mobile)', m.ki)}</div></div>`).join('') || '<div class="vide">Aucune config mobile pour cet IMSI</div>'}` : `
+    <h3>BTS ${esc(x.id)} <span class="badge info">${esc(x.type)}</span> ${x.bande_arfcn && x.bande_arfcn !== x.bande ? `<span class="badge ko">ARFCN ${esc(x.arfcn)} = ${esc(x.bande_arfcn)}</span>` : ''}</h3>
+    <div class="champs">${champ('Bande', x.bande)}${champ('ARFCN', x.arfcn)}${champ('Bande de l\'ARFCN', x.bande_arfcn)}${champ('LAC', x.lac)}${champ('Cell ID', x.cell_id)}
+      ${champ('BSIC', x.bsic)}${champ('IPA unit-id', x.unit_id)}${champ('Codec', x.codec)}${champ('GPRS', x.gprs)}</div>
+    <h3>Incohérences</h3>${alertes(x.incoherences)}
+    <h3 style="margin-top:1rem">GPRS (NS vers l'SGSN)</h3><div class="cles">${x.nsvc.map(t => `<div>${esc(t)}</div>`).join('') || '—'}</div>
+    <h3 style="margin-top:1rem">Intervalles de temps</h3><div class="cles">${x.timeslots.map((t, i) => `<div><em>TS${i} › </em>${esc(t.replace('phys_chan_config ', ''))}</div>`).join('')}</div>
+    <h3 style="margin-top:1rem">Configs osmo-bts de cette BTS (unit-id ${esc(x.unit_id)})</h3>
+    ${x.fichiers_bts.map(f => `<div style="display:flex;gap:.5rem;align-items:center;margin:.25rem 0"><span style="font-family:var(--mono)">${esc(f)}</span><button class="btn petit" onclick="ouvreFichier('${esc(f)}')">Ouvrir</button></div>`).join('') || '—'}
+    <details style="margin-top:1rem"><summary>Toutes les lignes de ${esc(x.noeud)} (osmo-bsc.cfg)</summary><pre>${esc(x.lignes.join('\n'))}</pre></details>`;
+}
+$('#ranListe').addEventListener('click', e => {
+  const it = e.target.closest('[data-k]'); if (!it) return; S.choixRan[S.seg] = it.dataset.k; dessineRan();
+});
+
+// ── paramètres ──
+function dessineParams() {
+  const g = S.etat.globals, f = $('#pFiltre').value.toLowerCase(), lanceur = $('#pLanceur').checked, modif = $('#pModif').checked;
+  const sections = {};
+  g.filter(p => (lanceur || p.bloc === 'reseau') && (!modif || (p.valeur != null && p.valeur !== p.defaut))
+              && (!f || (p.cle + ' ' + p.aide + ' ' + (p.valeur || '')).toLowerCase().includes(f)))
+   .forEach(p => (sections[p.section || '—'] = sections[p.section || '—'] || []).push(p));
+  $('#pListe').innerHTML = Object.entries(sections).map(([s, l]) => `<details class="section" open><summary>${esc(s)} <span class="badge">${l.length}</span></summary>
+    ${l.map(p => {
+      const v = p.valeur == null ? p.defaut : p.valeur;
+      const choix = (p.choix || '').split('|').map(c => c.trim()).filter(Boolean);
+      const entree = choix.length ? `<select data-cle="${esc(p.cle)}">${(choix.includes(v) ? [] : [v]).concat(choix).map(c => `<option ${c === v ? 'selected' : ''} value="${esc(c)}">${esc(c === '' ? '(défaut du script)' : c)}</option>`).join('')}</select>`
+                                  : `<input type="text" data-cle="${esc(p.cle)}" value="${esc(v)}" placeholder="vide = calculé (${esc(p.defaut) || 'auto'})">`;
+      return `<div class="param ${p.valeur != null && p.valeur !== p.defaut ? 'modifie' : ''}">
+        <span class="cle">${esc(p.cle)}</span>${entree}
+        <span class="bas"><button class="btn petit" data-ok="${esc(p.cle)}">Enregistrer</button><button class="btn petit" data-reset="${esc(p.cle)}" title="Défaut : ${esc(p.defaut)}">↺</button></span>
+        <span class="aide">${esc(p.aide)}${p.defaut !== '' ? ' — défaut : ' + esc(p.defaut) : ''}</span></div>`;
+    }).join('')}</details>`).join('') || '<div class="vide">Aucun paramètre</div>';
+}
+['#pFiltre', '#pLanceur', '#pModif'].forEach(s => $(s).addEventListener('input', dessineParams));
+$('#pListe').addEventListener('click', async e => {
+  const ok = e.target.dataset.ok, rs = e.target.dataset.reset;
+  try {
+    if (ok) { await api('/api/conf/set', { cle: ok, valeur: $(`[data-cle="${ok}"]`).value }); toast(`${ok} enregistré dans globals.conf — appliqué au prochain démarrage (avec « régénérer » pour les configs dérivées)`); }
+    else if (rs) { await api('/api/conf/reset', { cle: rs }); toast(`${rs} remis à sa valeur par défaut`); }
+    else return;
+    await charge();
+  } catch (er) { toast(er.message, true); }
+});
+
+// ── fichiers ──
+function dessineFichiers() {
+  const f = $('#fFiltre').value.toLowerCase();
+  const l = S.etat.fichiers.filter(x => !f || x.chemin.toLowerCase().includes(f));
+  $('#fCompte').textContent = S.etat.fichiers.length + ' fichiers';
+  $('#fListe').innerHTML = l.map(x => `<div class="item ${x.chemin === S.fichier ? 'on' : ''}" data-f="${esc(x.chemin)}">
+    <div class="titre"><span style="font-family:var(--mono);font-size:.9rem;word-break:break-all">${esc(x.chemin)}</span><span class="badge">${esc(x.genre)}</span></div>
+    <div class="sous">${(x.taille / 1024).toFixed(1)} ko · lu ${esc(x.lu_le)}</div></div>`).join('');
+}
+$('#fFiltre').addEventListener('input', dessineFichiers);
+$('#fListe').addEventListener('click', e => { const it = e.target.closest('[data-f]'); if (it) ouvreFichier(it.dataset.f); });
+async function ouvreFichier(chemin) {
+  $('#onglets button[data-o="fichiers"]').click();
+  S.fichier = chemin; dessineFichiers();
+  const f = await api('/api/conf/fichier?chemin=' + encodeURIComponent(chemin));
+  const inc = [];
+  (S.core ? S.core.regles : []).forEach(r => r.violations.filter(v => v.fichier === chemin).forEach(v => inc.push(Object.assign({ titre: r.titre }, v))));
+  $('#fDetail').innerHTML = `<h3 style="word-break:break-all">${esc(chemin)}</h3>
+    <div style="color:var(--t3);font-size:.85rem;margin-bottom:.5rem">sha256 ${esc(f.sha256.slice(0, 16))}… · ${f.taille} octets · lu ${esc(f.lu_le)}</div>
+    ${alertes(inc)}
+    <textarea id="fTexte" spellcheck="false" style="width:100%;min-height:55vh;font-family:var(--mono);font-size:.85rem;margin-top:.5rem">${esc(f.contenu)}</textarea>
+    <div style="display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap">
+      <button class="btn go" id="fSauve">Enregistrer (sauvegarde .bak)</button>
+      <span style="color:var(--t3);font-size:.85rem;align-self:center">Le démon relit son fichier à son prochain démarrage.</span></div>`;
+  $('#fSauve').onclick = async () => {
+    if (!confirm('Remplacer ' + chemin + ' ? (une copie .bak-<date> est gardée)')) return;
+    try { const r = await api('/api/conf/ecrire', { chemin, contenu: $('#fTexte').value }); toast(r.message); await charge(); ouvreFichier(chemin); }
+    catch (er) { toast(er.message, true); }
+  };
+}
+window.ouvreFichier = ouvreFichier;
+
+// ── cohérence, historique, journal ──
+function dessineCoherence() {
+  const r = S.core.regles, ko = r.reduce((n, x) => n + x.violations.length, 0);
+  const n = $('#nKo'); n.hidden = !ko; n.textContent = ko;
+  $('#cListe').innerHTML = r.map(x => `<div class="carte" style="margin-bottom:.75rem;box-shadow:none">
+    <div style="display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap"><b style="color:var(--t0)">${esc(x.titre)}</b>
+      ${x.ok === null ? `<span class="badge">non évaluée</span>` : x.ok ? '<span class="badge ok">ok</span>' : `<span class="badge ko">${x.violations.length} incohérence(s)</span>`}</div>
+    <div style="color:var(--t2);font-size:.9rem;margin:.25rem 0 .5rem">${esc(x.description)}</div>
+    ${x.erreur ? `<div class="alerte">${esc(x.erreur)}</div>` : ''}
+    ${x.violations.map(v => `<div class="alerte">${esc(v.message)}<small>${esc(v.fichier)}</small></div>`).join('')}
+    <small style="color:var(--t3)">règle <code>${esc(x.id)}</code></small></div>`).join('');
+}
+function dessineHistorique() {
+  $('#hTable').innerHTML = '<tr><th>Quand</th><th>Fichier</th><th>Clé</th><th>Avant</th><th>Après</th><th>Origine</th></tr>' +
+    S.etat.historique.map(h => `<tr><td class="mono">${esc(h.t)}</td><td class="mono">${esc(h.chemin)}</td><td class="mono">${esc(h.cle || '(contenu)')}</td>
+      <td class="mono">${esc(h.avant)}</td><td class="mono">${esc(h.apres)}</td><td><span class="badge">${esc(h.origine)}</span></td></tr>`).join('');
+}
+async function chargeJournal() {
+  try { $('#jTexte').textContent = (await api('/api/banc/journal')).texte || '(vide)'; } catch (e) { $('#jTexte').textContent = e.message; }
+}
+$('#jMaj').onclick = chargeJournal;
+
+async function charge() {
+  try {
+    const [etat, ran, core] = await Promise.all([api('/api/conf'), api('/api/conf/ran'), api('/api/conf/core')]);
+    S.etat = etat; S.ran = ran; S.core = core;
+    $('#gcPath').textContent = etat.globals_conf;
+    $('#coreFichier').textContent = core.core.length + ' démons';
+    dessineCore(); dessineRan(); dessineParams(); dessineFichiers(); dessineCoherence(); dessineHistorique();
+  } catch (e) { toast('Chargement : ' + e.message, true); }
+}
+charge(); chargeBanc();
+setInterval(chargeBanc, 5000);
+setInterval(() => { if (!document.hidden && !document.activeElement.matches('input,textarea,select')) charge(); }, 30000);
+</script>
+</body>
+</html>

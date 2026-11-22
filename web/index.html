@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="fr" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -378,12 +378,13 @@
     .pkt-table { font-size:13px; }
   }
 </style>
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 <div id="app">
 
   <header>
-    <span class="logo">⎔ OSMO_EGPRS</span>
+    <a class="logo" href="/" title="osmo_egprs — console d'exploitation"><span class="logo-mark">GSM</span><span>osmo_egprs</span></a>
     <span class="sep"></span>
     <span class="htag" id="tag-ops">0 ops</span>
     <span class="htag a5tag a5off" id="tag-a5" title="état chiffrement A5">A5 ?</span>
@@ -391,19 +392,15 @@
     <span class="sep"></span>
     <div class="vtabs">
       <button class="vtab active" id="vtab-console" onclick="switchView('console')">Console</button>
-      <button class="vtab" id="vtab-fft1" onclick="switchView('fft1')" title="FFT intégrée native (MS &amp; BTS + logs)">📡 FFT 1</button>
-      <button class="vtab" id="vtab-fft2" onclick="switchView('fft2')" title="Panadapter MS vs BTS">📡 FFT 2</button>
-      <button class="vtab" id="vtab-fft3" onclick="switchView('fft3')" title="Waterfalls Δ |MS−BTS|">📡 FFT 3</button>
+      <button class="vtab" id="vtab-spectres" onclick="switchView('spectres')" title="Les spectres de la chaine radio, par niveau : air DL/UL du pont, entree du DSP ; comparaison MS | Δ | BTS">📡 Spectres</button>
     </div>
     <div class="hright">
-      <button class="btn primary" onclick="send({type:'tshark_start'})" title="Start capture">▶ Capture</button>
-      <button class="btn danger" onclick="send({type:'tshark_stop'})" title="Stop capture">■ Stop</button>
-      <select class="btn" id="rec-src" title="Source IQ air à enregistrer (fifos relais libres)">
-        <option value="sdcch">IQ SDCCH air</option>
-        <option value="tch">IQ TCH air</option>
-      </select>
-      <select class="btn" id="rec-m" title="grgsm -m (type de canal)"><option value="BCCH_SDCCH4" selected>-m BCCH_SDCCH4</option><option value="BCCH">-m BCCH</option><option value="SDCCH8">-m SDCCH8</option><option value="TCHF">-m TCHF</option><option value="TCHH">-m TCHH</option></select>
-      <select class="btn" id="rec-t" title="grgsm -t (timeslot)"><option value="0" selected>-t 0</option><option value="1">-t 1</option><option value="2">-t 2</option><option value="3">-t 3</option><option value="4">-t 4</option><option value="5">-t 5</option><option value="6">-t 6</option><option value="7">-t 7</option></select>
+      <span class="htag" id="tag-banc" title="Etat du banc">banc ?</span>
+      <button class="btn primary" id="banc-start" onclick="bancStart()" title="Demarrer le banc (start.sh --config, la configuration de start.sh --configure)">▶ Démarrer</button>
+      <button class="btn danger" id="banc-stop" onclick="bancStop()" title="Arreter le banc (start.sh --stop)">■ Arrêter</button>
+      <span class="sep"></span>
+      <button class="btn" onclick="send({type:'tshark_start'})" title="Demarrer la capture des paquets (tshark)">⏺ Capture</button>
+      <button class="btn" onclick="send({type:'tshark_stop'})" title="Arreter la capture des paquets">■ Stop capture</button>
       <input class="btn" id="rec-kc" placeholder="Kc auto" title="Kc pour DECIPHERED — vide = Kc capturé auto ; sinon colle/saisis (hex)" style="width:150px;font-family:monospace">
       <button class="btn" onclick="fillKc()" title="Remplir avec le dernier Kc capturé">↧Kc</button>
       <button class="btn primary" id="rec-btn" onclick="toggleRec()" title="Enregistrer un cfile IQ de l'air -> path + commande grgsm_decode (ciphered/deciphered)">⏺ Rec cfile</button>
@@ -411,19 +408,7 @@
       <button class="btn" onclick="send({type:'poll'})">⟳ Refresh</button>
       <button class="btn" onclick="clearPackets()">Clear</button>
       <button class="btn vty-btn" onclick="spawnVty()">⌨ VTY</button>
-      <button class="btn primary" id="audio-btn" onclick="toggleAudio()" title="Écouter l'audio des appels (gsm_audio)">▶ Audio</button>
-      <button class="btn" id="mic-btn" onclick="toggleMic()" title="Parler dans les mobiles : votre micro alimente le sink gsm_mic, que gsm_in capte">🎤 Parler</button>
-      <!-- Le micro est celui du POSTE QUI AFFICHE CETTE PAGE, pas celui de la
-           machine hote : host_mic() (wslg-audio-bridge.sh) ne choisit la source
-           que pour l'hote. Des qu'on ouvre le tableau de bord depuis un autre
-           poste, seul CE selecteur decide. Choix memorise par navigateur. -->
-      <select class="btn" id="mic-dev" onchange="micPickDevice(this.value)"
-              title="Entree micro utilisee par CE navigateur" style="max-width:150px">
-        <option value="">micro : defaut</option>
-      </select>
-      <span id="mic-vu" class="htag" title="Gauche : niveau mesure DANS le navigateur. Droite : ce que le conteneur a reellement recu (ms/s et crete). 0 des deux cotes = entree muette." style="display:none">—</span>
-      <audio id="audio-stream" style="display:none"></audio>
-      <button class="theme-btn" onclick="toggleTheme()" id="theme-toggle">◐</button>
+      <a class="btn conf-btn" href="/conf" title="Configuration du banc : core, RAN, parametres, coherence, demarrer / arreter">⚙ Configuration</a>
       <span style="font-size:11px;color:var(--t3)"><span class="dot off" id="ws-dot"></span><span id="ws-txt">—</span></span>
     </div>
   </header>
@@ -836,6 +821,73 @@ function toggleAudio() {
 }
 (function(){ var el = document.getElementById('audio-stream'); if (!el) return;
   el.addEventListener('error', function(){ if (audioPlaying){ audioPlaying=false; document.getElementById('audio-btn').textContent='▶ Audio'; } }); })();
+// The Spectres iframe asks for the capture that feeds its annotations.
+window.addEventListener('message', function (e) {
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.type === 'capture') send({ type: e.data.on ? 'tshark_start' : 'tshark_stop' });
+});
+
+// ─── The bench: state, start, stop (conf-api.js, /api/banc) ─────────────────
+async function bancEtat() {
+  try {
+    var b = await (await fetch('/api/banc', { cache: 'no-store' })).json(), t = document.getElementById('tag-banc');
+    var n = Object.keys(b.processus || {}).length;
+    t.textContent = b.actif ? 'banc actif · ' + n + ' proc.' : 'banc arrêté';
+    t.className = 'htag' + (b.actif ? ' on' : '');
+    t.title = b.commande || '';
+  } catch (e) {}
+}
+// ─── Confirmation of start / stop, VERIFIED on the real state ───────────────
+// Before: the browser asks. After: the page polls /api/banc until the state has
+// really changed, and says so - not just "request sent" (a stop that failed in
+// silence once looked like a success).
+function bancAvis(texte, genre, duree) {
+  var d = document.getElementById('banc-avis');
+  if (!d) { d = document.createElement('div'); d.id = 'banc-avis'; document.body.appendChild(d); }
+  d.className = 'banc-avis ' + (genre || ''); d.textContent = texte; d.style.display = '';
+  clearTimeout(bancAvis.t);
+  if (duree) bancAvis.t = setTimeout(function () { d.style.display = 'none'; }, duree);
+}
+async function bancAttendre(veutActif, maxS) {   // -> the last state seen
+  var t0 = Date.now(), b = null;
+  while (Date.now() - t0 < maxS * 1000) {
+    try { b = await (await fetch('/api/banc', { cache: 'no-store' })).json(); } catch (e) {}
+    var n = b ? Object.keys(b.processus || {}).length : 0;
+    bancAvis((veutActif ? 'Démarrage en cours… ' : 'Arrêt en cours… ') + n + ' processus · ' + Math.round((Date.now() - t0) / 1000) + ' s', 'attente');
+    if (b && (veutActif ? (b.actif && n >= 8) : n === 0)) return b;
+    await new Promise(function (r) { setTimeout(r, 2000); });
+  }
+  return b;
+}
+async function bancStart() {
+  if (!confirm('Démarrer le banc (start.sh --config) ?')) return;
+  var b = document.getElementById('banc-start'); b.disabled = true;
+  try {
+    var r = await fetch('/api/banc/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"regen":false}' });
+    var j = await r.json();
+    if (!r.ok) { bancAvis('✗ Démarrage refusé : ' + (j.erreur || r.status), 'ko', 15000); return; }
+    var e = await bancAttendre(true, 120), n = e ? Object.keys(e.processus || {}).length : 0;
+    if (e && e.actif && n >= 8) bancAvis('✓ Banc démarré : ' + n + ' processus', 'ok', 10000);
+    else {
+      var jr = {}; try { jr = await (await fetch('/api/banc/journal', { cache: 'no-store' })).json(); } catch (x) {}
+      bancAvis('✗ Le banc ne démarre pas (' + n + ' processus après 2 min)\n' + String(jr.texte || '').trim().split('\n').slice(-4).join('\n'), 'ko', 30000);
+    }
+  } catch (e) { bancAvis('✗ ' + e, 'ko', 15000); } finally { b.disabled = false; bancEtat(); }
+}
+async function bancStop() {
+  if (!confirm('Arrêter le banc (start.sh --stop) ?')) return;
+  var b = document.getElementById('banc-stop'); b.disabled = true;
+  bancAvis('Arrêt en cours…', 'attente');
+  try {
+    var r = await fetch('/api/banc/stop', { method: 'POST' }), j = await r.json();
+    if (!r.ok) { bancAvis('✗ Arrêt en échec : ' + (j.erreur || r.status), 'ko', 30000); return; }
+    var e = await bancAttendre(false, 30), reste = e ? Object.keys(e.processus || {}) : ['?'];
+    if (!reste.length) bancAvis('✓ Banc arrêté', 'ok', 10000);
+    else bancAvis('✗ Encore en vie après l\'arrêt : ' + reste.join(', '), 'ko', 30000);
+  } catch (e) { bancAvis('✗ ' + e, 'ko', 15000); } finally { b.disabled = false; bancEtat(); }
+}
+bancEtat(); setInterval(bancEtat, 5000);
+
 function toggleTheme() {
   const html = document.documentElement;
   const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -843,10 +895,9 @@ function toggleTheme() {
   document.getElementById('theme-toggle').textContent = next === 'dark' ? '◐' : '◑';
   try { localStorage.setItem('osmo-theme', next); } catch {}
 }
-try {
-  const saved = localStorage.getItem('osmo-theme');
-  if (saved) { document.documentElement.dataset.theme = saved; document.getElementById('theme-toggle').textContent = saved === 'dark' ? '◐' : '◑'; }
-} catch {}
+// One theme now: light, with the important parts (bar, terminals, packet
+// detail) dark for contrast - web/theme.css.
+document.documentElement.dataset.theme = 'light';
 
 // ═══ FFT view (MS & BTS) — logique portée de fft_web.py, données via /psd ═══
 // ── CADENCE AUTO-REGLEE ─────────────────────────────────────────────────────
@@ -958,14 +1009,16 @@ function fftLogTick(){[['ms','ms'],[grgsmSrc,'bts']].forEach(function(p){
    if(atBottom)el.scrollTop=el.scrollHeight;
   }).catch(function(){});});}
 function switchView(v){
-  if(v==='fft') v='fft1';                                  // compat ancien appel
-  var fft = (v==='fft1'||v==='fft2'||v==='fft3');
-  var native = (v==='fft1');                                  // pane native : canvases + logs pilotes par fftTick
-  var frameSrc = v==='fft2'?'fft.html':(v==='fft3'?'fft_diff.html':'');
+  // One "Spectres" view (spectres.html): every IQ source once, by level of the
+  // chain, and the MS | delta | BTS comparison. The old FFT 1/2/3 lead there.
+  if(v==='fft'||v==='fft1'||v==='fft2'||v==='fft3') v='spectres';
+  var fft = (v==='spectres');
+  var native = false;
+  var frameSrc = fft ? 'spectres.html' : '';
   document.getElementById('main').style.display = fft?'none':'';
   document.getElementById('fft-view').style.display = fft?'':'none';
   document.getElementById('vtab-console').classList.toggle('active',!fft);
-  ['fft1','fft2','fft3'].forEach(function(id){
+  ['spectres'].forEach(function(id){
     var b=document.getElementById('vtab-'+id); if(b) b.classList.toggle('active',v===id);
   });
   var nat=document.getElementById('fft-native'), frm=document.getElementById('fft-frame'), ovl=document.getElementById('fft-overlay');
@@ -1154,6 +1207,13 @@ function matchFilter(p) {
 }
 
 function addPacket(p) {
+  // The Spectres view annotates its waterfalls with the radio messages: each
+  // packet is passed to its iframe (one tshark session, the one of this page).
+  var frm = document.getElementById('fft-frame');
+  if (frm && frm.style.display !== 'none' && frm.contentWindow) {
+    try { frm.contentWindow.postMessage({ type: 'paquet', p: { id: p.id, ts: p.ts, direction: p.direction || (p.uplink ? 'UL' : 'DL'),
+      protocol: p.protocol, l2: p.l2, l3: p.l3, rr: p.rr, cc: p.cc, info: p.info } }, location.origin); } catch (e) {}
+  }
   packets.push(p);
   if (packets.length > MAX_PKT) packets = packets.slice(-MAX_PKT/2);
   document.getElementById('pkt-counter').textContent = packets.length+' pkts';
@@ -1733,7 +1793,9 @@ function updateA5(a){ var el=document.getElementById('tag-a5'); if(!el)return;
           +' · clé observée ce run : '+(a.active?('oui, A5/'+a.algo):'pas encore')
           +' — le badge suit la session, pas les trames';
   window._lastKc=a.lastKc||window._lastKc||''; var kf=document.getElementById('rec-kc'); if(kf) kf.placeholder=window._lastKc?('Kc auto: '+window._lastKc):'Kc auto (aucun capté)'; }
-function toggleRec(){ if(recRunning){send({type:'record_stop'});} else {send({type:'record_start',source:document.getElementById('rec-src').value,m:document.getElementById('rec-m').value,t:parseInt(document.getElementById('rec-t').value,10),kc:document.getElementById('rec-kc').value});} }
+// The source / -m / -t selectors are gone from the bar: their former defaults
+// (IQ SDCCH air, BCCH_SDCCH4, timeslot 0).
+function toggleRec(){ if(recRunning){send({type:'record_stop'});} else {var g=function(i,d){var e=document.getElementById(i);return e&&e.value!==''?e.value:d;};send({type:'record_start',source:g('rec-src','sdcch'),m:g('rec-m','BCCH_SDCCH4'),t:parseInt(g('rec-t','0'),10),kc:g('rec-kc','')});} }
 function fillKc(){ var kf=document.getElementById('rec-kc'); if(kf&&window._lastKc) kf.value=window._lastKc; }
 function recFmtBytes(b){ if(b>=1e9)return (b/1e9).toFixed(2)+' Go'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mo'; if(b>=1e3)return (b/1e3).toFixed(0)+' Ko'; return (b||0)+' o'; }
 function setRec(on){ recRunning=on; var t=document.getElementById('tag-rec'), b=document.getElementById('rec-btn');
@@ -1789,6 +1851,10 @@ var APP_BASE  = parseFloat(localStorage.getItem('osmo.appZoom') || '0.85');
 function fitApp() {
   var app = document.getElementById('app');
   if (!app) return;
+  // The layout is responsive (web/theme.css): no more scale(). The scale
+  // used to shrink the app to 85 % and a later "height:100%" undid the
+  // compensation, leaving the bottom 15 % of the window empty.
+  app.style.setProperty('--k', '1'); document.body.classList.remove('app-scroll'); return;
   var w = window.innerWidth, h = window.innerHeight;
   // Le facteur est le plus CONTRAIGNANT des deux axes : reduire assez pour la
   // largeur mais pas pour la hauteur laisserait le bas coupe, et inversement.
