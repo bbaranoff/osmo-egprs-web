@@ -476,7 +476,11 @@ async function logs() {
   if (!document.querySelector('details').open) return;
   for (const [el, w] of [['#lMs', 'ms'], ['#lBts', logBts]]) {
     try { const r = await (await fetch('/logtail?which=' + w, { cache: 'no-store' })).json();
-      const p = $(el), bas = p.scrollTop + p.clientHeight >= p.scrollHeight - 20;
+      // suivre la fin par defaut ; seul un scroll de l'utilisateur coupe le suivi
+      const p = $(el);
+      if (!p.dataset.suivi) { p.dataset.suivi = '1'; p.addEventListener('scroll', () => {
+        if (p.clientHeight > 0) p.dataset.suivi = p.scrollTop + p.clientHeight >= p.scrollHeight - 20 ? '1' : '0'; }); }
+      const bas = p.dataset.suivi === '1';
       p.textContent = (r.error || r.text || '').replace(/\x1b\[[0-9;]*m/g, '').split('\n').slice(-300).join('\n');
       if (bas) p.scrollTop = p.scrollHeight; } catch (e) {}
   }
