@@ -432,6 +432,8 @@ function dessineHistorique() {
 }
 async function chargeJournal() {
   try { $('#jTexte').textContent = (await api('/api/banc/journal')).texte || '(vide)'; } catch (e) { $('#jTexte').textContent = e.message; }
+  // les dernieres lignes d'abord : le journal s'ouvre en bas
+  const j = $('#jTexte'); requestAnimationFrame(() => { j.scrollTop = j.scrollHeight; });
 }
 $('#jMaj').onclick = chargeJournal;
 

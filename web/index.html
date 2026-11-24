@@ -999,7 +999,13 @@ function fftLogTick(){[['ms','ms'],[grgsmSrc,'bts']].forEach(function(p){
   var w=p[0],id=p[1];
   fetch('/logtail?which='+w+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){
    var el=document.getElementById('log-'+id);if(!el)return;
-   var atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<30;
+   // Suivre la fin par defaut. L'ancien test « deja en bas ? » echouait au
+   // premier remplissage, panneau cache (hauteur 0) : le scroll etait perdu,
+   // le log restait en haut et n'y redescendait plus. Seul un scroll de
+   // l'utilisateur (panneau visible) coupe le suivi ; revenir en bas le remet.
+   if(!el.dataset.suivi){el.dataset.suivi='1';el.addEventListener('scroll',function(){
+     if(el.clientHeight>0)el.dataset.suivi=(el.scrollHeight-el.scrollTop-el.clientHeight<30)?'1':'0';});}
+   var atBottom=el.dataset.suivi==='1';
    // Un repli SILENCIEUX ferait prendre pont.log pour le flux grgsm decode.
    // On nomme la source des qu'elle n'est pas celle que l'onglet annonce.
    var note = d.fallback
