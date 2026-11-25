@@ -20,6 +20,10 @@ const { WebSocketServer, WebSocket } = require('ws');
 // ─── Config ──────────────────────────────────────────────────
 const PORT       = parseInt(process.env.HTTP_PORT || '80');
 const GSMTAP_UDP = parseInt(process.env.GSMTAP_PORT || '4729');
+// La 4G : srsENB envoie chaque PDU MAC (donc RRC et NAS) en UDP au format
+// « mac-lte-framed » (enb.conf [pcap] mac_net_enable, client_port). tshark le
+// reconnait par heuristique (mac_lte_udp). LTE_MAC_PORT=0 pour s'en passer.
+const LTE_MAC_UDP = parseInt(process.env.LTE_MAC_PORT || '5847');
 const PREFIX     = process.env.CONTAINER_PREFIX || 'osmo-operator-';
 const POLL_MS    = parseInt(process.env.POLL_INTERVAL || '4000');
 const VERBOSE    = process.argv.indexOf('--verbose') >= 0;
@@ -396,7 +400,7 @@ TsharkSession.prototype.start = function() {
     else          { this.capIface = 'lo';   log('GW ' + DOCKER_GW_IP + ' non trouvée, fallback "lo"'); }
   }
 
-  var FILTER = 'udp port ' + GSMTAP_UDP + ' or sctp';
+  var FILTER = 'udp port ' + GSMTAP_UDP + (LTE_MAC_UDP ? ' or udp port ' + LTE_MAC_UDP : '') + ' or sctp';
   var args = [
     '-i', this.capIface,
   ];
@@ -405,6 +409,7 @@ TsharkSession.prototype.start = function() {
   args = args.concat([
     '-f', FILTER,
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
+    '--enable-heuristic', 'mac_lte_udp',
     // Écriture pcap simultanée pour dissection on-demand
     '-w', PCAP_PATH, '-P',
     '-T', 'fields',
@@ -452,6 +457,11 @@ TsharkSession.prototype.start = function() {
     '-e', 'gsm_a.rr.timeslot',          // f[26]
     '-e', 'gsm_a.rr.timing_adv',        // f[27]
     '-e', 'gsm_a.rr.ra',                // f[28]
+    // [2026-11-25] La 4G, toujours EN FIN de liste (parseLine indexe en dur).
+    '-e', 'mac-lte.rnti',               // f[29]
+    '-e', 'mac-lte.sfn',                // f[30]
+    '-e', 'mac-lte.subframe',           // f[31]
+    '-e', 'mac-lte.direction',          // f[32]  0 = montant, 1 = descendant
     '-l', '-n',
   ]);
 
@@ -554,6 +564,7 @@ TsharkSession.prototype.fetchDissect = function(frameNum) {
     '-T', 'json',
     '-2',          // two-pass analysis → dissection complète, gsm_sms exposé au premier niveau
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
+    '--enable-heuristic', 'mac_lte_udp',
     '-n',
   ], function(err, stdout, stderr) {
     if (stderr && stderr.trim()) dbg('[DISSECT stderr]', stderr.trim());
@@ -718,7 +729,8 @@ TsharkSession.prototype.parseLine = function(line) {
                   (f[6]||'').indexOf('SMS-SUBMIT') >= 0;
   var isRpData  = protos.indexOf('gsm_a.rp') >= 0;
   var isSctp    = protos.indexOf('sctp') >= 0 || protos.indexOf('m3ua') >= 0;
-  if (!isGsmtap && !isSctp) return null;
+  var isLteMac  = protos.indexOf('mac-lte') >= 0;
+  if (!isGsmtap && !isSctp && !isLteMac) return null;
 
   var info = (f[6] || '').trim();
   var BLACKLIST = ['TRX Clock Ind', 'clock jitter', 'GSM clock', 'elapsed_fn'];
@@ -727,7 +739,8 @@ TsharkSession.prototype.parseLine = function(line) {
   // Dedup (même paquet sur veth + bridge)
   var now    = Date.now();
   var tsMs   = Math.round(parseFloat(f[1]) * 1000);
-  var dkey   = f[2] + '|' + f[3] + '|' + f[4] + '|' + Math.round(tsMs / 100);
+  // 4G : deux PDU de meme taille dans les memes 100 ms sont deux trames (SFN.SF les distingue)
+  var dkey   = f[2] + '|' + f[3] + '|' + f[4] + '|' + Math.round(tsMs / 100) + (isLteMac ? '|' + f[30] + '.' + f[31] : '');
   var dset   = this.dedupSet;
   Object.keys(dset).forEach(function(k) { if (now > dset[k]) delete dset[k]; });
   if (dset[dkey]) return null;
@@ -744,6 +757,16 @@ TsharkSession.prototype.parseLine = function(line) {
   else if (protos.indexOf('gsm_a.dtap') >= 0)  displayProto = 'DTAP';
   else if (protos.indexOf('lapdm') >= 0)       displayProto = 'LAPDm';
   else if (protos.indexOf('gsmtap') >= 0)      displayProto = 'GSMTAP';
+  // La 4G : la couche la plus haute donne le nom (NAS dans RRC dans MAC).
+  var isLte = protos.indexOf('mac-lte') >= 0;
+  if (isLte) {
+    if      (protos.indexOf('nas-eps') >= 0) displayProto = 'NAS-EPS';
+    else if (protos.indexOf('lte_rrc') >= 0) displayProto = 'LTE RRC';
+    else                                     displayProto = 'MAC-LTE';
+    // Le bourrage MAC (une trame par sous-trame des qu'il y a de la data)
+    // noierait tout : on ne garde que ce qui porte un message.
+    if (displayProto === 'MAC-LTE' && /Padding:remainder/.test(info) && !/RAR|Timing Advance|Contention/.test(info)) return null;
+  }
 
   var pkt = {
     id:        ++packetIdGlobal,
@@ -758,6 +781,13 @@ TsharkSession.prototype.parseLine = function(line) {
     opLabel: '—', direction: '',
     l2: '', cc: '', rr: '', l3: '',
   };
+  if (isLte) {
+    pkt.rat = 'lte';
+    pkt.opLabel = '4G';
+    if (f[29] !== undefined && f[29] !== '') pkt.rnti = '0x' + parseInt(f[29]).toString(16);
+    if (f[30] !== undefined && f[30] !== '') pkt.sfn = f[30] + (f[31] !== undefined && f[31] !== '' ? '.' + f[31] : '');
+    if (f[32] !== undefined && f[32] !== '') { pkt.uplink = parseInt(f[32]) === 0; pkt.direction = pkt.uplink ? 'UL' : 'DL'; }
+  }
 
   // ── Detail LAPDm / CC (2026-08-12) ──────────────────────────────────────
   // f[15..25], appendus en fin de liste tshark. Champs absents = chaine vide :
