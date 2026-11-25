@@ -372,6 +372,11 @@ function TsharkSession(ws, clientId) {
   this.buf      = '';
   this.capIface = null;
   this.dedupSet = {};
+  // [2026-11-25] UN PCAP PAR CLIENT. Tous ecrivaient /tmp/capture.pcap : deux
+  // clients (le tableau de bord et une appli, ou deux applis) s'ecrasaient, les
+  // captures s'arretaient (« tshark stopped (code 0) ») et la dissection d'une
+  // trame lisait le fichier d'un autre. Supprime a l'arret de la session.
+  this.pcap = PCAP_PATH.replace(/\.pcap$/, '') + '-' + String(clientId).replace(/[^A-Za-z0-9_-]/g, '') + '.pcap';
 }
 TsharkSession.prototype.start = function() {
   if (this.running) return;
@@ -411,7 +416,7 @@ TsharkSession.prototype.start = function() {
     '-d', 'udp.port==' + GSMTAP_UDP + ',gsmtap',
     '--enable-heuristic', 'mac_lte_udp',
     // Écriture pcap simultanée pour dissection on-demand
-    '-w', PCAP_PATH, '-P',
+    '-w', this.pcap, '-P',
     '-T', 'fields',
     '-E', 'header=n',
     '-E', 'separator=\t',
@@ -520,13 +525,13 @@ TsharkSession.prototype.stop = function() {
 // Hex dump on-demand depuis le pcap
 // Lit le pcap de façon sûre : copie dans un tmp avant de le lire
 // pour éviter les conflits avec tshark qui écrit en live.
-function safePcapRead(args, cb) {
-  if (!fs.existsSync(PCAP_PATH)) { cb(new Error('pcap absent'), ''); return; }
-  var tmp = PCAP_PATH + '.snap.' + Date.now();
-  exec('cp ' + PCAP_PATH + ' ' + tmp, function(cerr) {
+function safePcapRead(pcap, args, cb) {
+  if (!fs.existsSync(pcap)) { cb(new Error('pcap absent'), ''); return; }
+  var tmp = pcap + '.snap.' + Date.now();
+  execFile('cp', [pcap, tmp], function(cerr) {
     if (cerr) { cb(cerr, ''); return; }
-    // Remplacer -r PCAP_PATH par -r tmp dans les args
-    var a = args.map(function(x) { return x === PCAP_PATH ? tmp : x; });
+    // Remplacer -r <pcap> par -r tmp dans les args
+    var a = args.map(function(x) { return x === pcap ? tmp : x; });
     execFile('tshark', a, { maxBuffer: 4 * 1024 * 1024 }, function(err, stdout, stderr) {
       fs.unlink(tmp, function() {});
       cb(err, stdout || '', stderr || '');
@@ -536,7 +541,7 @@ function safePcapRead(args, cb) {
 
 TsharkSession.prototype.fetchHex = function(frameNum) {
   var self = this;
-  safePcapRead(['-r', PCAP_PATH, '-Y', 'frame.number == ' + frameNum, '-x'],
+  safePcapRead(self.pcap, ['-r', self.pcap, '-Y', 'frame.number == ' + frameNum, '-x'],
     function(err, stdout) {
       var hex = '';
       if (!err && stdout) {
@@ -552,14 +557,14 @@ TsharkSession.prototype.fetchHex = function(frameNum) {
 
 TsharkSession.prototype.fetchDissect = function(frameNum) {
   var self = this;
-  if (!fs.existsSync(PCAP_PATH)) {
-    log('[DISSECT] pcap absent:', PCAP_PATH);
+  if (!fs.existsSync(self.pcap)) {
+    log('[DISSECT] pcap absent:', self.pcap);
     self.sendToClient('packet_dissect', { frameNum: frameNum, layers: null });
     return;
   }
   log('[DISSECT] frame ' + frameNum);
-  safePcapRead([
-    '-r', PCAP_PATH,
+  safePcapRead(self.pcap, [
+    '-r', self.pcap,
     '-Y', 'frame.number == ' + frameNum,
     '-T', 'json',
     '-2',          // two-pass analysis → dissection complète, gsm_sms exposé au premier niveau
@@ -1976,6 +1981,7 @@ wss.on('connection', function(ws, req) {
     clients.delete(clientObj);
     vtyMgr.closeAll();
     tsharkSession.stop();
+    setTimeout(function() { fs.unlink(tsharkSession.pcap, function() {}); }, 1500);   // son pcap part avec lui
     micBridge.stop(clientId);          // sinon pacat survit au client parti
     log('Client ' + clientId + ' disconnected');
   });
@@ -2018,7 +2024,7 @@ httpServer.listen(PORT, function() {
     log('osmo-egprs-web listening on :' + PORT);
     log('Operators: [' + ops.join(', ') + '] (' + ops.length + ')');
     log('Capture filter: udp port ' + GSMTAP_UDP + ' or sctp');
-    log('PCAP: ' + PCAP_PATH);
+    log('PCAP: ' + PCAP_PATH.replace(/\.pcap$/, '') + '-<client>.pcap (un par client)');
   });
 });
 
