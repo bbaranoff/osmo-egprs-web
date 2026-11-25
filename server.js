@@ -94,11 +94,27 @@ const RR_MSG = {
 };
 
 // ─── GSMTAP Channel Type Map ─────────────────────────────────
+// [2026-11-25] Table refaite sur gsmtap.h (GSMTAP_CHANNEL_*) : l'ancienne etait
+// decalee - un CC CONNECT sur TCH/F (9) s'affichait « PACCH », un SDCCH/8 (8)
+// « TCH/H ». Le bit 0x80 dit « canal associe » : c'est le SACCH du canal.
 const GSMTAP_CHAN = {
-  '0':'UNKNOWN','1':'BCCH','2':'CCCH','3':'SDCCH4','4':'SDCCH8',
-  '5':'BCCH','6':'SDCCH','7':'TCH/F','8':'TCH/H','9':'PACCH',
-  '10':'CBCH52','11':'PDCH','12':'PTCCH','13':'CBCH51','128':'ACCH',
+  0:'', 1:'BCCH', 2:'CCCH', 3:'RACH', 4:'AGCH', 5:'PCH', 6:'SDCCH', 7:'SDCCH4', 8:'SDCCH8',
+  9:'TCH/F', 10:'TCH/H', 11:'PACCH', 12:'CBCH52', 13:'PDTCH', 14:'PTCCH', 15:'CBCH51',
+  16:'VOICE/F', 17:'VOICE/H',
 };
+// Le nom du canal d'une trame GSMTAP. `signalisation` : la trame porte du LAPDm
+// (donc de la signalisation) - sur un TCH, c'est le FACCH qui la transporte.
+function gsmtapChan(v, signalisation) {
+  if (v === undefined || v === '') return '';
+  var n = parseInt(v);                       // « 9 » comme « 0x09 »
+  if (isNaN(n)) return String(v);
+  var base = n & 0x7f, nom = GSMTAP_CHAN[base];
+  if (nom === undefined) nom = 'CH' + base;
+  if (n & 0x80) return nom ? 'SACCH (' + nom + ')' : 'SACCH';
+  if (signalisation && base === 9)  return 'FACCH/F';
+  if (signalisation && base === 10) return 'FACCH/H';
+  return nom;
+}
 
 // ─── State ───────────────────────────────────────────────────
 var operators         = {};
@@ -836,7 +852,7 @@ TsharkSession.prototype.parseLine = function(line) {
   if (isGsmtap) {
     pkt.arfcn    = f[7]  || '';
     pkt.uplink   = f[8]  === '1';
-    pkt.channel  = GSMTAP_CHAN[f[9]] || f[9] || '';
+    pkt.channel  = gsmtapChan(f[9], protos.indexOf('lapdm') >= 0);
     pkt.timeslot = f[10] || '';
     pkt.fn       = f[11] || '';
     pkt.direction = pkt.uplink ? 'UL' : 'DL';
